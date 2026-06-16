@@ -1,0 +1,12 @@
+[Unit]
+Description=mcsd HTTP Daemon
+After=network.target
+Documentation=https://github.com/humanfriend22/mcsd
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mcsd systemd serve
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
