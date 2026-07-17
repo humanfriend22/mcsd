@@ -11,7 +11,14 @@ type vendorResponse struct {
 	Versions []string `json:"versions"`
 }
 
+type initResponse struct {
+	Vendors  []vendorResponse `json:"vendors"`
+	PublicIP string           `json:"public_ip"`
+}
+
 func listVendors(w http.ResponseWriter, r *http.Request) {
+	recache()
+
 	result := make([]vendorResponse, 0, len(vendors.All))
 	for _, v := range vendors.All {
 		versions, err := v.Versions()
@@ -23,5 +30,5 @@ func listVendors(w http.ResponseWriter, r *http.Request) {
 		}
 		result = append(result, vendorResponse{Name: v.Name(), Versions: versions})
 	}
-	writeJSON(w, 200, result)
+	writeJSON(w, 200, initResponse{Vendors: result, PublicIP: cachedPublicIP})
 }

@@ -29,7 +29,7 @@ func safeJoin(base, relPath string) (string, error) {
 
 func instanceBase(r *http.Request) (string, error) {
 	id := r.PathValue("id")
-	if _, err := core.LoadInstanceConfig(id); err != nil {
+	if _, err := cachedInstanceOrError(id); err != nil {
 		return "", err
 	}
 	return core.InstanceDir(id), nil

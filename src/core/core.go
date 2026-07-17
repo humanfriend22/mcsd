@@ -93,25 +93,25 @@ func EnsureReady() error {
 	var missing []string
 
 	if _, err := os.Stat(DefaultBasePath); os.IsNotExist(err) {
-		missing = append(missing, "  instances dir missing")
+		missing = append(missing, "instances dir missing")
 	}
 	if _, err := os.Stat(GlobalConfigPath); os.IsNotExist(err) {
-		missing = append(missing, "  config missing")
+		missing = append(missing, "config missing")
 	}
 	if _, err := os.Stat(DaemonServicePath); os.IsNotExist(err) {
-		missing = append(missing, "  daemon service missing")
+		missing = append(missing, "daemon service missing")
 	}
 	if _, err := os.Stat(DaemonServiceTemplatePath); os.IsNotExist(err) {
-		missing = append(missing, "  server template missing")
+		missing = append(missing, "server template missing")
 	}
 
 	if len(missing) > 0 {
-		return fmt.Errorf("mcsd not fully initialized — run 'mcsd init':\n%s", strings.Join(missing, "\n"))
+		return fmt.Errorf("mcsd not fully initialized:\n- %s", strings.Join(missing, "\n- "))
 	}
 
 	sd, err := NewSDClient()
 	if err != nil {
-		return fmt.Errorf("systemd unavailable: %w", err)
+		return err
 	}
 	defer sd.Close()
 	cleanOrphans(sd)

@@ -79,4 +79,3 @@ func WriteConfig(config *Config) error {
 	}
 	return WriteAtomic(GlobalConfigPath, append(data, '\n'), 0644)
 }
-

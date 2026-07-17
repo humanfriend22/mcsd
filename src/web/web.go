@@ -1,6 +1,6 @@
 //go:build embed_web
 
-package main
+package web
 
 import (
 	"embed"
@@ -10,7 +10,7 @@ import (
 	"mcsd/api"
 )
 
-//go:embed all:web/.output/public
+//go:embed all:dist
 var webFiles embed.FS
 
 type spaHandler struct {
@@ -33,7 +33,7 @@ func (h spaHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func init() {
-	sub, err := fs.Sub(webFiles, "web/.output/public")
+	sub, err := fs.Sub(webFiles, "dist")
 	if err != nil {
 		panic(err)
 	}

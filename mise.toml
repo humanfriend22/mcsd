@@ -1,0 +1,51 @@
+[env]
+GOOS = "linux"
+GOARCH = "arm64"
+REMOTE = "pi@192.168.64.9"
+_.file = ".env"
+
+[tasks.build-web]
+description = "Generates the Nuxt static site only when web files change"
+dir = "web"
+sources = [
+  "app/**/*.vue",
+  "app/**/*.ts",
+  "app/**/*.js",
+  "nuxt.config.ts",
+  "package.json"
+]
+run = "bun run generate"
+
+[tasks.clean-web]
+run = "rm -rf web/dist web/.output web/.nuxt"
+
+[tasks.embed]
+description = "Copy the built web into the Go embed"
+depends = ["build-web"]
+run = "rm -rf src/web/dist && cp -r web/.output/public src/web/dist"
+
+[tasks.build]
+description = "Builds the Go project (optimized for binary size)"
+depends = ["embed"]
+run = 'go build -C src -tags embed_web -ldflags="-s -w" -o ../mcsd .'
+
+[tasks.clean]
+run = "rm -f mcsd"
+
+[tasks.deploy]
+description = "Deploy binary to Pi"
+depends = ["build"]
+run = '''
+ssh -t $REMOTE "sudo mcsd stop"
+scp mcsd $REMOTE:/tmp/mcsd
+ssh -t $REMOTE "sudo cp /tmp/mcsd /usr/local/bin/mcsd && sudo mcsd start"
+'''
+
+[tasks.deploy-rsync]
+description = "Deploy binary to Pi"
+depends = ["build"]
+run = "rsync -W --no-compress mcsd rsync://$REMOTE/home/bin/mcsd"
+
+[tools]
+bun = "latest"
+go = "latest"

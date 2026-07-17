@@ -1,15 +1,14 @@
 <script setup lang="ts">
-import { useIntervalFn } from '@vueuse/core'
 import { NIcon } from 'naive-ui'
 import {
   HardwareChipOutline, ServerOutline, SaveOutline, LayersOutline
 } from '@vicons/ionicons5'
 import { formatMemoryMB } from '~/utils/format'
-import type { Instance, Snapshot } from '~/types/api'
+import { useInstances, useVitals } from '~/api'
+import type { Snapshot } from '~/api'
 
-const instances = ref<Instance[]>([])
-const snapshot = ref<Snapshot | null>(null)
-const loaded = ref(false)
+const { instances, loaded } = useInstances()
+const { snapshot } = useVitals()
 
 const mockSnapshot: Snapshot = {
   host: {
@@ -26,38 +25,11 @@ const mockSnapshot: Snapshot = {
   },
 }
 
-async function refresh() {
-  const data = !import.meta.dev ? await listInstances().catch(() => null) : [
-    {
-      id: 'test',
-      name: 'Test',
-      vendor: 'Fabric',
-      version: '1.21.4',
-      java_args: ['-Xms512M', '-Xmx3000M'],
-      server_args: ['nogui'],
-      memory: 3000,
-      ports: { game: 25565, rcon: 25575 },
-      state: 'active' as const, enabled: true,
-      uptime_seconds: 7452,
-      memory_used: 1840,
-    }
-  ]
-  if (data) instances.value = data
-  loaded.value = true
-}
-
 async function refreshSnapshot() {
-  const data = !import.meta.dev ? await getVitals().catch(() => null) : mockSnapshot
-  if (data) snapshot.value = data
+  if (import.meta.dev && !snapshot.value) snapshot.value = mockSnapshot
 }
 
-onMounted(async () => {
-  await refresh()
-  await refreshSnapshot()
-})
-
-useIntervalFn(refresh, 1000)
-useIntervalFn(refreshSnapshot, 1000)
+onMounted(refreshSnapshot)
 
 const hostStats = computed(() => {
   const h = snapshot.value?.host
@@ -114,15 +86,8 @@ function thresholdColor(pct: number) {
           {{ stat.label }}
         </div>
         <div class="text-lg font-medium text-neutral-100">{{ stat.value }}</div>
-        <n-progress
-          type="line"
-          :percentage="stat.pct"
-          :show-indicator="false"
-          :height="3"
-          :color="thresholdColor(stat.pct)"
-          :rail-color="'rgba(255,255,255,0.08)'"
-          class="mt-3"
-        />
+        <n-progress type="line" :percentage="stat.pct" :show-indicator="false" :height="3"
+          :color="thresholdColor(stat.pct)" :rail-color="'rgba(255,255,255,0.08)'" class="mt-3" />
       </n-card>
       <n-card v-if="budgetStats" size="small" :bordered="true">
         <div class="flex items-center gap-1.5 text-[13px] text-neutral-400 mb-2">
@@ -130,15 +95,8 @@ function thresholdColor(pct: number) {
           Memory budget
         </div>
         <div class="text-lg font-medium text-neutral-100">{{ budgetStats.value }}</div>
-        <n-progress
-          type="line"
-          :percentage="budgetStats.pct"
-          :show-indicator="false"
-          :height="3"
-          :color="thresholdColor(budgetStats.pct)"
-          :rail-color="'rgba(255,255,255,0.08)'"
-          class="mt-3"
-        />
+        <n-progress type="line" :percentage="budgetStats.pct" :show-indicator="false" :height="3"
+          :color="thresholdColor(budgetStats.pct)" :rail-color="'rgba(255,255,255,0.08)'" class="mt-3" />
       </n-card>
     </div>
 
@@ -151,7 +109,8 @@ function thresholdColor(pct: number) {
     </div>
 
     <div v-else class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-      <ServerCard v-for="inst in instances" :key="inst.id" :instance="inst" @open="id => $router.push(`/instances/${id}`)" />
+      <ServerCard v-for="inst in instances" :key="inst.id" :instance="inst"
+        @open="id => $router.push(`/instances/${id}`)" />
     </div>
   </div>
 </template>

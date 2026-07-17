@@ -1,12 +1,21 @@
 <script setup lang="ts">
 import { useMessage, NIcon, NButton, NTooltip } from 'naive-ui'
-import { useEventSource, useElementBounding, useWindowSize } from '@vueuse/core'
+import { useElementBounding, useWindowSize } from '@vueuse/core'
 import {
   TimeOutline, HardwareChipOutline, GlobeOutline,
   WifiOutline, CopyOutline, CheckmarkOutline,
 } from '@vicons/ionicons5'
 import { formatUptime, formatMemoryMB } from '~/utils/format'
-import type { Instance } from '~/types/api'
+import {
+  rconCommand,
+  startInstance,
+  stopInstance,
+  disableInstance,
+  enableInstance,
+  useInstanceLogs,
+  useInit,
+} from '~/api'
+import type { Instance } from '~/api'
 
 const props = defineProps<{
   instance: Instance
@@ -21,6 +30,7 @@ const isTransitioning = computed(() => {
   const s = props.instance.state
   return s === 'activating' || s === 'deactivating'
 })
+const { publicIp } = useInit()
 
 async function doAction(actionKey: string, actionFn: () => Promise<unknown>, successMessage: string) {
   actionLoading.value = actionKey
@@ -36,12 +46,6 @@ const toggleAutostart = () => props.instance.enabled
   ? doAction('autostart', () => disableInstance(props.instanceId), 'Autostart disabled')
   : doAction('autostart', () => enableInstance(props.instanceId), 'Autostart enabled')
 
-// Stats
-const publicIp = ref<string | null>(null)
-onMounted(async () => {
-  const result = await getPublicIp()
-  if (result) publicIp.value = result.ip
-})
 const gamePort = computed(() => props.instance.ports?.game ?? null)
 const localJoinAddress = computed(() =>
   gamePort.value ? `${window.location.hostname}:${gamePort.value}` : null
@@ -80,7 +84,7 @@ const BOTTOM_SAFE_AREA = 84
 const availableHeight = computed(() =>
   Math.max(200, windowHeight.value - viewerTop.value - BOTTOM_SAFE_AREA)
 )
-const { data: sseData } = useEventSource(`/api/instances/${props.instanceId}/logs`, [], { autoReconnect: true })
+const { data: sseData } = useInstanceLogs(props.instanceId)
 watch(sseData, (line) => {
   if (line === null) return
   logLines.value.push(line)
@@ -133,7 +137,7 @@ async function sendRcon() {
       </InstanceStatCard>
 
       <InstanceStatCard label="Uptime" :icon="TimeOutline"
-        :value="isRunning && instance.uptime_seconds ? formatUptime(instance.uptime_seconds) : '—'" />
+        :value="isRunning && instance.active_since ? formatUptime(Math.floor((Date.now() - new Date(instance.active_since).getTime()) / 1000)) : '—'" />
 
       <InstanceStatCard label="Local address" :icon="WifiOutline">
         <div class="flex items-center justify-between gap-2">

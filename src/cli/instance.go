@@ -17,9 +17,6 @@ type StartCmd struct {
 }
 
 func (c *StartCmd) Run() error {
-	if err := core.EnsureReady(); err != nil {
-		return err
-	}
 	instance, err := loadInstance(c.ID)
 	if err != nil {
 		return err
@@ -37,9 +34,6 @@ type StopCmd struct {
 }
 
 func (c *StopCmd) Run() error {
-	if err := core.EnsureReady(); err != nil {
-		return err
-	}
 	instance, err := loadInstance(c.ID)
 	if err != nil {
 		return err
@@ -57,9 +51,6 @@ type RestartCmd struct {
 }
 
 func (c *RestartCmd) Run() error {
-	if err := core.EnsureReady(); err != nil {
-		return err
-	}
 	instance, err := loadInstance(c.ID)
 	if err != nil {
 		return err
@@ -77,9 +68,6 @@ type StatusCmd struct {
 }
 
 func (c *StatusCmd) Run() error {
-	if err := core.EnsureReady(); err != nil {
-		return err
-	}
 	if c.ID != "" {
 		if err := helpers.ValidateID(c.ID); err != nil {
 			return err
@@ -118,26 +106,27 @@ func proxySystemctl(units ...string) error {
 type ListCmd struct{}
 
 func (c *ListCmd) Run() error {
-	if err := core.EnsureReady(); err != nil {
+	ids, err := core.ListInstanceConfigs()
+	if err != nil {
 		return err
+	}
+	if len(ids) == 0 {
+		fmt.Println("No servers found.")
+		return nil
 	}
 	sdClient, err := core.NewSDClient()
 	if err != nil {
 		return err
 	}
 	defer sdClient.Close()
-	statuses, err := sdClient.List("mcsd-server@*.service")
-	if err != nil {
-		return err
-	}
-	if len(statuses) == 0 {
-		fmt.Println("No servers found.")
-		return nil
-	}
 	writer := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(writer, "ID\tSTATUS")
-	for _, status := range statuses {
-		fmt.Fprintf(writer, "%s\t%s\n", core.UnitToID(status.Name), friendlyState(status.State))
+	for _, id := range ids {
+		status, err := sdClient.Status(core.UnitName(id))
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(writer, "%s\t%s\n", id, friendlyState(status.State))
 	}
 	return writer.Flush()
 }
@@ -163,9 +152,6 @@ type DeleteCmd struct {
 }
 
 func (c *DeleteCmd) Run() error {
-	if err := core.EnsureReady(); err != nil {
-		return err
-	}
 	sdClient, err := core.NewSDClient()
 	if err != nil {
 		return err
@@ -200,9 +186,6 @@ type RCONCmd struct {
 }
 
 func (c *RCONCmd) Run() error {
-	if err := core.EnsureReady(); err != nil {
-		return err
-	}
 	instance, err := loadInstance(c.ID)
 	if err != nil {
 		return err
@@ -220,9 +203,6 @@ type EnableCmd struct {
 }
 
 func (c *EnableCmd) Run() error {
-	if err := core.EnsureReady(); err != nil {
-		return err
-	}
 	instance, err := loadInstance(c.ID)
 	if err != nil {
 		return err
@@ -244,9 +224,6 @@ type DisableCmd struct {
 }
 
 func (c *DisableCmd) Run() error {
-	if err := core.EnsureReady(); err != nil {
-		return err
-	}
 	instance, err := loadInstance(c.ID)
 	if err != nil {
 		return err
@@ -268,9 +245,6 @@ type ConsoleCmd struct {
 }
 
 func (c *ConsoleCmd) Run() error {
-	if err := core.EnsureReady(); err != nil {
-		return err
-	}
 	instance, err := loadInstance(c.ID)
 	if err != nil {
 		return err

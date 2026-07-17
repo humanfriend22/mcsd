@@ -33,7 +33,7 @@ func (c *InitCmd) Run() error {
 		return err
 	}
 
-	fmt.Printf("mcsd initialized.\n  Memory budget: %d MB\n", memory)
-	fmt.Println("\nRun 'sudo mcsd daemon start' to start the HTTP daemon.")
+	fmt.Printf("mcsd initialized. memory budget: %d MB\n", memory)
+	fmt.Println("\nRun 'sudo mcsd start' to start the HTTP daemon.")
 	return nil
 }

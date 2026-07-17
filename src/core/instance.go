@@ -92,7 +92,7 @@ func LoadInstanceConfig(id string) (*InstanceConfig, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("instance %q not found: %w", id, os.ErrNotExist)
+			return nil, fmt.Errorf("instance %q not found", id)
 		}
 		return nil, fmt.Errorf("open instance config: %w", err)
 	}

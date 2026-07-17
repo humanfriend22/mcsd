@@ -14,10 +14,6 @@ import (
 type CreateCmd struct{}
 
 func (c *CreateCmd) Run() error {
-	if err := core.EnsureReady(); err != nil {
-		return err
-	}
-
 	instance, ports, downloadURL, err := runCreateWizard()
 	if err != nil {
 		return err

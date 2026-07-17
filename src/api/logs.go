@@ -12,7 +12,7 @@ import (
 
 func streamLogs(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	if _, err := core.LoadInstanceConfig(id); err != nil {
+	if _, err := cachedInstanceOrError(id); err != nil {
 		writeError(w, err)
 		return
 	}

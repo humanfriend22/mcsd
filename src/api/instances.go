@@ -10,14 +10,10 @@ import (
 )
 
 func listInstances(w http.ResponseWriter, r *http.Request) {
-	ids, err := core.ListInstanceConfigs()
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	results := make([]*core.InstanceState, 0, len(ids))
+	ids := getCachedIDs()
+	results := make([]*instanceData, 0, len(ids))
 	for _, id := range ids {
-		resp, err := buildInstanceResponse(id)
+		resp, err := buildInstanceData(id)
 		if err != nil {
 			continue
 		}
@@ -28,7 +24,7 @@ func listInstances(w http.ResponseWriter, r *http.Request) {
 
 func getInstance(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	resp, err := buildInstanceResponse(id)
+	resp, err := buildInstanceData(id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -65,6 +61,7 @@ func createInstance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	setCachedInstance(req.ID, &instance)
 	if downloadURL != "" {
 		if err := instance.Download(downloadURL); err != nil {
 			writeError(w, err)
@@ -72,7 +69,7 @@ func createInstance(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp, err := buildInstanceResponse(req.ID)
+	resp, err := buildInstanceData(req.ID)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -131,8 +128,9 @@ func patchInstance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	setCachedInstance(id, instance)
 
-	resp, err := buildInstanceResponse(id)
+	resp, err := buildInstanceData(id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -142,10 +140,12 @@ func patchInstance(w http.ResponseWriter, r *http.Request) {
 
 func deleteInstance(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	evictRCON(id)
 	if err := core.DeleteByID(id, sdClient); err != nil {
 		writeError(w, err)
 		return
 	}
+	removeCachedInstance(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -157,6 +157,7 @@ func startInstance(w http.ResponseWriter, r *http.Request) {
 
 func stopInstance(w http.ResponseWriter, r *http.Request) {
 	instanceAction(w, r, func(inst *core.InstanceConfig) error {
+		evictRCON(inst.ID)
 		return inst.Stop(sdClient)
 	})
 }
@@ -181,7 +182,7 @@ func disableInstance(w http.ResponseWriter, r *http.Request) {
 
 func instanceAction(w http.ResponseWriter, r *http.Request, fn func(*core.InstanceConfig) error) {
 	id := r.PathValue("id")
-	instance, err := core.LoadInstanceConfig(id)
+	instance, err := cachedInstanceOrError(id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -211,7 +212,7 @@ func upgradeInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	instance, err := core.LoadInstanceConfig(id)
+	instance, err := cachedInstanceOrError(id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -243,8 +244,9 @@ func upgradeInstance(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	setCachedInstance(id, instance)
 
-	resp, err := buildInstanceResponse(id)
+	resp, err := buildInstanceData(id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -262,12 +264,12 @@ func rconInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	instance, err := core.LoadInstanceConfig(id)
+	instance, err := cachedInstanceOrError(id)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	response, err := instance.RCON(req.Command)
+	response, err := sendRCON(instance, req.Command)
 	if err != nil {
 		writeError(w, err)
 		return

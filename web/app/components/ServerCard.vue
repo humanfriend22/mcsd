@@ -6,7 +6,7 @@ import {
   GlobeOutline, CopyOutline, CheckmarkOutline, TimeOutline
 } from '@vicons/ionicons5'
 import { formatUptime, formatMemoryMB } from '~/utils/format'
-import type { Instance } from '~/types/api'
+import type { Instance } from '~/api'
 
 const props = defineProps<{ instance: Instance }>()
 const emit = defineEmits<{ (e: 'open', id: string): void }>()
@@ -38,9 +38,9 @@ const memLabel = computed(() => {
 })
 
 const uptimeLabel = computed(() => {
-  const s = props.instance.uptime_seconds
-  if (!s || props.instance.state !== 'active') return null
-  return formatUptime(s)
+  const since = props.instance.active_since
+  if (!since || props.instance.state !== 'active') return null
+  return formatUptime(Math.floor((Date.now() - new Date(since).getTime()) / 1000))
 })
 
 const copied = ref(false)

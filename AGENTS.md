@@ -360,6 +360,12 @@ Full text at `docs/adr/`.
 
 ---
 
+## Web UI conventions
+
+- **All polling loops live in `app.vue`.** Page components and composables must not start their own `setInterval` / `useIntervalFn` / recursive-`setTimeout` poll loops. Shared reactive data (e.g. the instances list) is owned by `app.vue` and passed down via `provide`.
+
+---
+
 ## Agent skills
 
 ### Issue tracker

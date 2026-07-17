@@ -3,9 +3,16 @@ import { useMessage } from 'naive-ui'
 import { NIcon, NButton, NPopconfirm, NSpin } from 'naive-ui'
 import {
   FolderOutline, DocumentOutline, TrashOutline,
-  CloudUploadOutline, ArrowBackOutline, SaveOutline, CloseOutline
+  CloudUploadOutline, SaveOutline, CloseOutline
 } from '@vicons/ionicons5'
-import type { FileEntry } from '~/types/api'
+import {
+  deleteFile,
+  listFiles,
+  readFile,
+  uploadFile,
+  writeFile,
+} from '~/api'
+import type { FileEntry } from '~/api'
 
 const props = defineProps<{ instanceId: string }>()
 
@@ -152,16 +159,16 @@ function fmtDate(iso: string): string {
 </script>
 
 <template>
-  <div class="mt-2">
-    <!-- File editor view -->
-    <div v-if="selectedFile">
-      <div class="flex items-center gap-2 mb-4">
-        <NButton text size="small" class="-ml-1" @click="closeEditor">
-          <template #icon>
-            <NIcon :component="ArrowBackOutline" />
-          </template>
-          {{ currentPath || 'root' }}
-        </NButton>
+  <div class="mt-2 max-w-6xl">
+    <!-- Breadcrumb (always visible) -->
+    <div class="flex items-center gap-1 mb-4 pl-1">
+      <NButton text size="small" @click="navigate('')">root</NButton>
+      <template v-for="(seg, i) in breadcrumb" :key="i">
+        <span class="text-neutral-600">/</span>
+        <NButton text size="small" @click="navigate(pathUpTo(i))">{{ seg }}</NButton>
+      </template>
+
+      <template v-if="selectedFile">
         <span class="text-neutral-600">/</span>
         <span class="text-neutral-100 text-sm font-medium">{{ selectedFile.name }}</span>
         <div class="ml-auto flex gap-2" v-if="isText(selectedFile.name)">
@@ -178,8 +185,22 @@ function fmtDate(iso: string): string {
             Save
           </NButton>
         </div>
-      </div>
+      </template>
+      <template v-else>
+        <div class="ml-auto">
+          <NButton size="small" @click="triggerUpload">
+            <template #icon>
+              <NIcon :component="CloudUploadOutline" />
+            </template>
+            Upload
+          </NButton>
+          <input ref="fileInput" type="file" multiple class="hidden" @change="onFileInput" />
+        </div>
+      </template>
+    </div>
 
+    <!-- File editor view -->
+    <div v-if="selectedFile">
       <div v-if="loadingFile" class="flex justify-center py-12">
         <NSpin size="large" />
       </div>
@@ -193,23 +214,6 @@ function fmtDate(iso: string): string {
 
     <!-- Directory listing view -->
     <div v-else>
-      <!-- Breadcrumb + upload -->
-      <div class="flex items-center gap-1 mb-4">
-        <NButton text size="small" @click="navigate('')">root</NButton>
-        <template v-for="(seg, i) in breadcrumb" :key="i">
-          <span class="text-neutral-600">/</span>
-          <NButton text size="small" @click="navigate(pathUpTo(i))">{{ seg }}</NButton>
-        </template>
-        <div class="ml-auto">
-          <NButton size="small" @click="triggerUpload">
-            <template #icon>
-              <NIcon :component="CloudUploadOutline" />
-            </template>
-            Upload
-          </NButton>
-          <input ref="fileInput" type="file" multiple class="hidden" @change="onFileInput" />
-        </div>
-      </div>
 
       <div v-if="loadingDir" class="flex justify-center py-12">
         <NSpin size="large" />

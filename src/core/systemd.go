@@ -38,10 +38,10 @@ func (client *SDClient) Start(unit string) error {
 	done := make(chan string, 1)
 	_, err := client.conn.StartUnitContext(bgCtx, unit, "replace", done)
 	if err != nil {
-		return fmt.Errorf("start %s: %w", unit, err)
+		return fmt.Errorf("start %s: systemd start failed: %w", unit, err)
 	}
 	if result := <-done; result != "done" {
-		return fmt.Errorf("start %s: job result %q", unit, result)
+		return fmt.Errorf("start %s: job result %s", unit, result)
 	}
 	return nil
 }
@@ -50,10 +50,10 @@ func (client *SDClient) Stop(unit string) error {
 	done := make(chan string, 1)
 	_, err := client.conn.StopUnitContext(bgCtx, unit, "replace", done)
 	if err != nil {
-		return fmt.Errorf("stop %s: %w", unit, err)
+		return fmt.Errorf("stop %s: systemd stop failed: %w", unit, err)
 	}
 	if result := <-done; result != "done" && result != "cancelled" {
-		return fmt.Errorf("stop %s: job result %q", unit, result)
+		return fmt.Errorf("stop %s: job result %s", unit, result)
 	}
 	return nil
 }
@@ -62,10 +62,10 @@ func (client *SDClient) Restart(unit string) error {
 	done := make(chan string, 1)
 	_, err := client.conn.RestartUnitContext(bgCtx, unit, "replace", done)
 	if err != nil {
-		return fmt.Errorf("restart %s: %w", unit, err)
+		return fmt.Errorf("restart %s: systemd restart failed: %w", unit, err)
 	}
 	if result := <-done; result != "done" {
-		return fmt.Errorf("restart %s: job result %q", unit, result)
+		return fmt.Errorf("restart %s: job result %s", unit, result)
 	}
 	return nil
 }
@@ -73,7 +73,7 @@ func (client *SDClient) Restart(unit string) error {
 func (client *SDClient) Status(unit string) (*ServiceStatus, error) {
 	statuses, err := client.conn.ListUnitsByNamesContext(bgCtx, []string{unit})
 	if err != nil {
-		return nil, fmt.Errorf("status %s: %w", unit, err)
+		return nil, fmt.Errorf("status %s: systemd status failed: %w", unit, err)
 	}
 	if len(statuses) == 0 {
 		return &ServiceStatus{Name: unit, State: "inactive", SubState: "dead"}, nil
@@ -90,7 +90,7 @@ func (client *SDClient) Status(unit string) (*ServiceStatus, error) {
 func (client *SDClient) List(pattern string) ([]*ServiceStatus, error) {
 	units, err := client.conn.ListUnitsByPatternsContext(bgCtx, nil, []string{pattern})
 	if err != nil {
-		return nil, fmt.Errorf("list %s: %w", pattern, err)
+		return nil, fmt.Errorf("list %s: systemd list failed: %w", pattern, err)
 	}
 	statuses := make([]*ServiceStatus, 0, len(units))
 	for _, unit := range units {
@@ -105,17 +105,26 @@ func (client *SDClient) List(pattern string) ([]*ServiceStatus, error) {
 }
 
 func (client *SDClient) Reload() error {
-	return client.conn.ReloadContext(bgCtx)
+	if err := client.conn.ReloadContext(bgCtx); err != nil {
+		return fmt.Errorf("reload systemd: %w", err)
+	}
+	return nil
 }
 
 func (client *SDClient) Enable(unit string) error {
 	_, _, err := client.conn.EnableUnitFilesContext(bgCtx, []string{unit}, false, true)
-	return err
+	if err != nil {
+		return fmt.Errorf("enable %s: systemd enable failed: %w", unit, err)
+	}
+	return nil
 }
 
 func (client *SDClient) Disable(unit string) error {
 	_, err := client.conn.DisableUnitFilesContext(bgCtx, []string{unit}, false)
-	return err
+	if err != nil {
+		return fmt.Errorf("disable %s: systemd disable failed: %w", unit, err)
+	}
+	return nil
 }
 
 // ActiveSince returns when the unit last entered the active state.
@@ -123,7 +132,7 @@ func (client *SDClient) Disable(unit string) error {
 func (client *SDClient) ActiveSince(unit string) (time.Time, error) {
 	props, err := client.conn.GetUnitPropertiesContext(bgCtx, unit)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("get properties %s: %w", unit, err)
+		return time.Time{}, fmt.Errorf("active since %s: systemd properties failed: %w", unit, err)
 	}
 	timestamp, ok := props["ActiveEnterTimestamp"]
 	if !ok {
@@ -139,7 +148,7 @@ func (client *SDClient) ActiveSince(unit string) (time.Time, error) {
 func (client *SDClient) MemoryUsedBytes(unit string) (uint64, error) {
 	props, err := client.conn.GetUnitPropertiesContext(bgCtx, unit)
 	if err != nil {
-		return 0, fmt.Errorf("get properties %s: %w", unit, err)
+		return 0, fmt.Errorf("memory used %s: systemd properties failed: %w", unit, err)
 	}
 	v, ok := props["MemoryCurrent"]
 	if !ok {

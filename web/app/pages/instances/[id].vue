@@ -1,31 +1,20 @@
 <script setup lang="ts">
-import { ArrowBackOutline } from '@vicons/ionicons5'
-import { NIcon } from 'naive-ui'
-
 const route = useRoute()
 const router = useRouter()
 const instanceId = route.params.id as string
 
 const activeTab = ref('overview')
-const { instance, notFound, refresh } = useInstance(instanceId)
+const { instance, notFound, update, refresh } = useInstance(instanceId)
 </script>
 
 <template>
   <div v-if="notFound" class="text-center py-12">
     <p class="text-neutral-400 mb-4">Instance not found.</p>
-    <n-button @click="router.push('/')">Back to dashboard</n-button>
+    <n-button @click="router.push('/')">Go to dashboard</n-button>
   </div>
 
   <div v-else>
-    <div class="mb-6">
-      <n-button text size="small" class="text-neutral-500 mb-1 -ml-1" @click="router.push('/')">
-        <template #icon>
-          <NIcon :component="ArrowBackOutline" />
-        </template>
-        Back
-      </n-button>
-      <InstanceHeader :instance="instance" :instance-id="instanceId" />
-    </div>
+    <InstanceHeader :instance="instance" :instance-id="instanceId" class="mb-6" />
 
     <n-tabs v-model:value="activeTab" type="line" animated>
 
@@ -48,7 +37,7 @@ const { instance, notFound, refresh } = useInstance(instanceId)
       </n-tab-pane>
 
       <n-tab-pane name="settings" tab="Settings">
-        <InstanceSettingsTab v-if="instance" :instance="instance" @instance-updated="instance = $event"
+        <InstanceSettingsTab v-if="instance" :instance="instance" @instance-updated="update"
           @deleted="router.push('/')" />
         <n-spin v-else size="large" class="flex justify-center py-12" />
       </n-tab-pane>

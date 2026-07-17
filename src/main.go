@@ -1,6 +1,10 @@
 package main
 
-import "mcsd/cli"
+import (
+	_ "mcsd/web"
+
+	"mcsd/cli"
+)
 
 func main() {
 	cli.Execute()

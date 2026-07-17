@@ -14,9 +14,6 @@ type EditCmd struct {
 }
 
 func (c *EditCmd) Run() error {
-	if err := core.EnsureReady(); err != nil {
-		return err
-	}
 	instance, err := loadInstance(c.ID)
 	if err != nil {
 		return err

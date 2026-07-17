@@ -1,21 +1,16 @@
-import { useIntervalFn } from '@vueuse/core'
-import type { Instance } from '~/types/api'
+import { loadInstanceData, loadInstanceStates, setInstanceConfig, useInstances } from '~/api'
+import type { InstanceConfig } from '~/api'
 
 export function useInstance(id: string) {
-  const instance = ref<Instance | null>(null)
-  const notFound = ref(false)
+  const { instances, loaded } = useInstances()
 
-  async function refresh() {
-    const data = await getInstance(id)
-    if (data) {
-      instance.value = data
-    } else if (!instance.value) {
-      notFound.value = true
-    }
+  const instance = computed(() => instances.value.find(i => i.id === id) ?? null)
+  const notFound = computed(() => loaded.value && !instance.value)
+
+  function update(config?: InstanceConfig) {
+    if (config) setInstanceConfig(id, config)
+    else loadInstanceData()
   }
 
-  onMounted(refresh)
-  useIntervalFn(refresh, 1000)
-
-  return { instance, notFound, refresh }
+  return { instance, notFound, update, refresh: loadInstanceStates }
 }

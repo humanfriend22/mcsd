@@ -2,7 +2,7 @@
 import { NIcon, NTag } from 'naive-ui'
 import { TimeOutline, HardwareChipOutline } from '@vicons/ionicons5'
 import { formatUptime, formatMemoryMB } from '~/utils/format'
-import type { Instance } from '~/types/api'
+import type { Instance } from '~/api'
 
 const props = defineProps<{ instance: Instance | null; instanceId: string }>()
 

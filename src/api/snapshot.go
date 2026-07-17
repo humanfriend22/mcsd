@@ -17,10 +17,10 @@ import (
 type hostVitals struct {
 	MemoryTotal int     `json:"memory_total"`
 	MemoryUsed  int     `json:"memory_used"`
-	LoadAvg1      float64 `json:"load_avg_1"`
-	CPUCores      int     `json:"cpu_cores"`
-	DiskTotalGB   int     `json:"disk_total_gb"`
-	DiskUsedGB    int     `json:"disk_used_gb"`
+	LoadAvg1    float64 `json:"load_avg_1"`
+	CPUCores    int     `json:"cpu_cores"`
+	DiskTotalGB int     `json:"disk_total_gb"`
+	DiskUsedGB  int     `json:"disk_used_gb"`
 }
 
 type budgetVitals struct {
@@ -34,22 +34,15 @@ type snapshotResponse struct {
 }
 
 func readBudgetVitals() (*budgetVitals, error) {
-	cfg, err := core.LoadConfig()
-	if err != nil {
-		return nil, err
+	cfg := getCachedGlobalConfig()
+	if cfg == nil {
+		return nil, fmt.Errorf("global config not loaded")
 	}
-	ids, err := core.ListInstanceConfigs()
-	if err != nil {
-		return nil, err
-	}
+	instances := getCachedInstances()
 	var used int
-	for _, id := range ids {
+	for id, inst := range instances {
 		status, err := sdClient.Status(core.UnitName(id))
 		if err != nil || status.State != "active" {
-			continue
-		}
-		inst, err := core.LoadInstanceConfig(id)
-		if err != nil {
 			continue
 		}
 		used += inst.Memory
@@ -57,19 +50,19 @@ func readBudgetVitals() (*budgetVitals, error) {
 	return &budgetVitals{Total: cfg.MemoryBudget, Used: used}, nil
 }
 
-func getPublicIP(w http.ResponseWriter, r *http.Request) {
+var cachedPublicIP string
+
+func initPublicIP() {
 	resp, err := http.Get("https://api4.ipify.org?format=text")
 	if err != nil {
-		writeError(w, err)
 		return
 	}
 	defer resp.Body.Close()
 	ipBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"ip": strings.TrimSpace(string(ipBytes))})
+	cachedPublicIP = strings.TrimSpace(string(ipBytes))
 }
 
 func getVitals(w http.ResponseWriter, r *http.Request) {
@@ -102,10 +95,10 @@ func readHostVitals() (*hostVitals, error) {
 	return &hostVitals{
 		MemoryTotal: int(memTotal / 1024),
 		MemoryUsed:  int((memTotal - memAvail) / 1024),
-		LoadAvg1:      loadAvg,
-		CPUCores:      runtime.NumCPU(),
-		DiskTotalGB:   int(diskTotal / (1024 * 1024 * 1024)),
-		DiskUsedGB:    int((diskTotal - diskFree) / (1024 * 1024 * 1024)),
+		LoadAvg1:    loadAvg,
+		CPUCores:    runtime.NumCPU(),
+		DiskTotalGB: int(diskTotal / (1024 * 1024 * 1024)),
+		DiskUsedGB:  int((diskTotal - diskFree) / (1024 * 1024 * 1024)),
 	}, nil
 }
 

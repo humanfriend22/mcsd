@@ -17,9 +17,6 @@ type DaemonCmd struct {
 type DaemonStartCmd struct{}
 
 func (c *DaemonStartCmd) Run() error {
-	if err := core.EnsureReady(); err != nil {
-		return err
-	}
 	sdClient, err := core.NewSDClient()
 	if err != nil {
 		return err
@@ -31,9 +28,6 @@ func (c *DaemonStartCmd) Run() error {
 type DaemonStopCmd struct{}
 
 func (c *DaemonStopCmd) Run() error {
-	if err := core.EnsureReady(); err != nil {
-		return err
-	}
 	sdClient, err := core.NewSDClient()
 	if err != nil {
 		return err
@@ -45,9 +39,6 @@ func (c *DaemonStopCmd) Run() error {
 type DaemonEnableCmd struct{}
 
 func (c *DaemonEnableCmd) Run() error {
-	if err := core.EnsureReady(); err != nil {
-		return err
-	}
 	sdClient, err := core.NewSDClient()
 	if err != nil {
 		return err
@@ -63,9 +54,6 @@ func (c *DaemonEnableCmd) Run() error {
 type DaemonDisableCmd struct{}
 
 func (c *DaemonDisableCmd) Run() error {
-	if err := core.EnsureReady(); err != nil {
-		return err
-	}
 	sdClient, err := core.NewSDClient()
 	if err != nil {
 		return err
@@ -81,9 +69,6 @@ func (c *DaemonDisableCmd) Run() error {
 type DaemonStatusCmd struct{}
 
 func (c *DaemonStatusCmd) Run() error {
-	if err := core.EnsureReady(); err != nil {
-		return err
-	}
 	sdClient, err := core.NewSDClient()
 	if err != nil {
 		return err
