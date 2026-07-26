@@ -11,20 +11,8 @@ type InitCmd struct {
 }
 
 func (c *InitCmd) Run() error {
-	memory := c.Memory
-	if memory == 0 {
-		total, err := core.TotalSystemMemory()
-		if err != nil {
-			return fmt.Errorf("read system memory: %w", err)
-		}
-		memory = total - 512
-	}
-
-	if err := core.Init(memory); err != nil {
-		return err
-	}
-
-	if err := core.SDManager.Enable(""); err != nil {
+	memory, err := core.Init(c.Memory)
+	if err != nil {
 		return err
 	}
 

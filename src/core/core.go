@@ -28,37 +28,51 @@ func InstanceDir(id string) string {
 	return filepath.Join(DefaultBasePath, id)
 }
 
-func Init(memoryBudget int) error {
-	if memoryBudget < 512 {
-		return &ValidationError{Message: fmt.Sprintf("memory budget must be at least 512 MB, got %d", memoryBudget)}
-	}
-
+// Init sets up mcsd on this host. memoryBudget is the RAM (MB) to reserve across
+// all instances; 0 falls back to all system RAM minus 512 MB. Returns the resolved budget.
+func Init(memoryBudget int) (int, error) {
 	total, err := TotalSystemMemory()
 	if err != nil {
-		return &ServerError{Message: fmt.Sprintf("read system memory: %s", err.Error())}
+		return 0, &ServerError{Message: fmt.Sprintf("read system memory: %s", err.Error())}
+	}
+
+	if memoryBudget == 0 {
+		memoryBudget = total - 512
+	}
+
+	if memoryBudget < 512 {
+		return 0, &ValidationError{Message: fmt.Sprintf("memory budget must be at least 512 MB, got %d", memoryBudget)}
 	}
 	if total-memoryBudget < 512 {
-		return &ValidationError{Message: fmt.Sprintf("memory budget %d MB leaves less than 512 MB for system (total: %d MB)", memoryBudget, total)}
+		return 0, &ValidationError{Message: fmt.Sprintf("memory budget %d MB leaves less than 512 MB for system (total: %d MB)", memoryBudget, total)}
 	}
 
 	if err := os.MkdirAll(DefaultBasePath, 0755); err != nil {
-		return &ServerError{Message: fmt.Sprintf("create instances dir: %s", err.Error())}
+		return 0, &ServerError{Message: fmt.Sprintf("create instances dir: %s", err.Error())}
 	}
 
 	config := &Config{MemoryBudget: memoryBudget}
 	if err := WriteConfig(config); err != nil {
-		return &ServerError{Message: fmt.Sprintf("write config: %s", err.Error())}
+		return 0, &ServerError{Message: fmt.Sprintf("write config: %s", err.Error())}
 	}
 
 	if err := os.WriteFile(DaemonServicePath, []byte(DaemonServiceContent), 0644); err != nil {
-		return &ServerError{Message: fmt.Sprintf("write daemon service: %s", err.Error())}
+		return 0, &ServerError{Message: fmt.Sprintf("write daemon service: %s", err.Error())}
 	}
 
 	if err := os.WriteFile(DaemonServiceTemplatePath, []byte(DaemonServiceTemplateContent), 0644); err != nil {
-		return &ServerError{Message: fmt.Sprintf("write daemon service template: %s", err.Error())}
+		return 0, &ServerError{Message: fmt.Sprintf("write daemon service template: %s", err.Error())}
 	}
 
-	return nil
+	if err := SDManager.Enable(""); err != nil {
+		return 0, err
+	}
+
+	if err := SDManager.Reload(); err != nil {
+		return 0, err
+	}
+
+	return memoryBudget, nil
 }
 
 func DeInit() error {

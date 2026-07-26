@@ -1,9 +1,15 @@
 [env]
 GOOS = "linux"
 GOARCH = "arm64"
-_.file = ".env"
+LIMA_INSTANCE = "debian-trixie"
 
 # web/
+
+[tasks."web:dev"]
+description = "Run the Nuxt dev server"
+dir = "web"
+env = { NUXT_PUBLIC_API_HOST = "{{env.REMOTE_IP}}" }
+run = "bun run dev"
 
 [tasks."build:web"]
 description = "Generates the Nuxt static site"
@@ -42,12 +48,17 @@ run = [{ task = "build:web" }, { task = "embed" }, { task = "build:go" }]
 description = "Go binary only, re-embedding whatever web build already exists"
 run = [{ task = "embed" }, { task = "build:go" }]
 
+# deploy
+
 [tasks._deploy]
 hide = true
+env = { SSH_CONFIG = "$HOME/.lima/$LIMA_INSTANCE/ssh.config", HOST = "lima-$LIMA_INSTANCE" }
 run = '''
-ssh -t $REMOTE_USER@$REMOTE_IP "sudo mcsd stop || true"
-scp mcsd $REMOTE_USER@$REMOTE_IP:/tmp/mcsd
-ssh -t $REMOTE_USER@$REMOTE_IP "sudo cp /tmp/mcsd /usr/local/bin/mcsd && sudo mcsd start"
+scp -F "$SSH_CONFIG" mcsd "$HOST":/tmp/mcsd
+ssh -F "$SSH_CONFIG" "$HOST" -- '
+  sudo install -m 755 /tmp/mcsd /usr/local/bin/mcsd
+  sudo systemctl restart mcsd.service
+'
 '''
 
 [tasks.deploy]
@@ -58,12 +69,31 @@ run = [{ task = "build" }, { task = "_deploy" }]
 description = "Build backend only (stale frontend), deploy to the VM, and restart the service"
 run = [{ task = "build:hot" }, { task = "_deploy" }]
 
-[tasks."dev:web"]
-description = "Run the Nuxt dev server"
-dir = "web"
-env = { NUXT_PUBLIC_API_HOST = "{{env.REMOTE_IP}}" }
-run = "bun run dev"
+# Lima VM
+
+[tasks."vm:create"]
+description = "Create the dev VM (once)"
+run = "limactl create --yes ./debian-trixie.yaml"
+
+[tasks."vm:up"]
+description = "Start the dev VM"
+run = 'limactl start "$LIMA_INSTANCE"'
+
+[tasks."vm:down"]
+description = "Stop the dev VM"
+run = 'limactl stop "$LIMA_INSTANCE"'
+
+[tasks."vm:shell"]
+description = "Interactive shell in the dev VM"
+raw = true
+run = 'limactl shell "$LIMA_INSTANCE"'
+
+[tasks."vm:delete"]
+# depends = "vm:down"
+description = "Delete the VM entirely; vm:up rebuilds it from scratch"
+run = 'limactl delete --force "$LIMA_INSTANCE"'
 
 [tools]
 bun = "latest"
 go = "latest"
+lima = "latest"
