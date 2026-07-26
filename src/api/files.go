@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"mcsd/core"
+	"mcsd/utils"
 )
 
 type fileEntry struct {
@@ -29,7 +30,7 @@ func safeJoin(base, relPath string) (string, error) {
 
 func instanceBase(r *http.Request) (string, error) {
 	id := r.PathValue("id")
-	if _, err := cachedInstanceOrError(id); err != nil {
+	if _, err := core.LoadInstance(id); err != nil {
 		return "", err
 	}
 	return core.InstanceDir(id), nil
@@ -108,7 +109,7 @@ func writeFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := atomicWrite(target, data); err != nil {
+	if err := utils.WriteAtomic(target, data, 0640); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -177,17 +178,9 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := atomicWrite(destPath, data); err != nil {
+	if err := utils.WriteAtomic(destPath, data, 0640); err != nil {
 		writeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"path": strings.TrimPrefix(destPath, base+string(filepath.Separator))})
-}
-
-func atomicWrite(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0640); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
 }

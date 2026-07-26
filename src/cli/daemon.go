@@ -17,34 +17,19 @@ type DaemonCmd struct {
 type DaemonStartCmd struct{}
 
 func (c *DaemonStartCmd) Run() error {
-	sdClient, err := core.NewSDClient()
-	if err != nil {
-		return err
-	}
-	defer sdClient.Close()
-	return core.StartDaemon(sdClient)
+	return core.SDManager.Start("")
 }
 
 type DaemonStopCmd struct{}
 
 func (c *DaemonStopCmd) Run() error {
-	sdClient, err := core.NewSDClient()
-	if err != nil {
-		return err
-	}
-	defer sdClient.Close()
-	return core.StopDaemon(sdClient)
+	return core.SDManager.Stop("")
 }
 
 type DaemonEnableCmd struct{}
 
 func (c *DaemonEnableCmd) Run() error {
-	sdClient, err := core.NewSDClient()
-	if err != nil {
-		return err
-	}
-	defer sdClient.Close()
-	if err := core.EnableDaemon(sdClient); err != nil {
+	if err := core.SDManager.Enable(""); err != nil {
 		return err
 	}
 	fmt.Println("mcsd.service enabled — will start on boot.")
@@ -54,12 +39,7 @@ func (c *DaemonEnableCmd) Run() error {
 type DaemonDisableCmd struct{}
 
 func (c *DaemonDisableCmd) Run() error {
-	sdClient, err := core.NewSDClient()
-	if err != nil {
-		return err
-	}
-	defer sdClient.Close()
-	if err := core.DisableDaemon(sdClient); err != nil {
+	if err := core.SDManager.Disable(""); err != nil {
 		return err
 	}
 	fmt.Println("mcsd.service disabled.")
@@ -69,12 +49,7 @@ func (c *DaemonDisableCmd) Run() error {
 type DaemonStatusCmd struct{}
 
 func (c *DaemonStatusCmd) Run() error {
-	sdClient, err := core.NewSDClient()
-	if err != nil {
-		return err
-	}
-	defer sdClient.Close()
-	status, err := core.StatusDaemon(sdClient)
+	status, err := core.SDManager.Status("")
 	if err != nil {
 		return err
 	}

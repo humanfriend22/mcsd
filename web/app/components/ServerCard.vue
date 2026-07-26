@@ -6,13 +6,13 @@ import {
   GlobeOutline, CopyOutline, CheckmarkOutline, TimeOutline
 } from '@vicons/ionicons5'
 import { formatUptime, formatMemoryMB } from '~/utils/format'
-import type { Instance } from '~/api'
+import type { Instance } from '~/services/api'
 
-const props = defineProps<{ instance: Instance }>()
+const { instance } = defineProps<{ instance: Instance }>()
 const emit = defineEmits<{ (e: 'open', id: string): void }>()
 
 const statusType = computed(() => {
-  switch (props.instance.state) {
+  switch (instance.state) {
     case 'active': return 'success'
     case 'activating':
     case 'deactivating': return 'warning'
@@ -21,9 +21,9 @@ const statusType = computed(() => {
   }
 })
 
-const statusLabel = computed(() => props.instance.state)
+const statusLabel = computed(() => instance.state)
 
-const gamePort = computed(() => props.instance.ports?.game ?? null)
+const gamePort = computed(() => instance.ports?.game ?? null)
 
 const joinUrl = computed(() => {
   if (!gamePort.value) return null
@@ -31,16 +31,16 @@ const joinUrl = computed(() => {
 })
 
 const memLabel = computed(() => {
-  const used = props.instance.memory_used
-  const alloc = props.instance.memory
+  const used = instance.memory_used
+  const alloc = instance.memory
   if (used != null && used > 0) return `${formatMemoryMB(used)} / ${formatMemoryMB(alloc)}`
   return `${formatMemoryMB(alloc)} allocated`
 })
 
 const uptimeLabel = computed(() => {
-  const since = props.instance.active_since
-  if (!since || props.instance.state !== 'active') return null
-  return formatUptime(Math.floor((Date.now() - new Date(since).getTime()) / 1000))
+  const secs = instance.uptime_seconds
+  if (!secs || instance.state !== 'active') return null
+  return formatUptime(secs)
 })
 
 const copied = ref(false)

@@ -7,7 +7,7 @@ import (
 )
 
 type InitCmd struct {
-	Memory int `name:"memory" default:"0" help:"Total RAM (MB) across all instances (default: system RAM - 1024)"`
+	Memory int `name:"memory" default:"0" help:"Total RAM (MB) across all instances (default: system RAM - 512)"`
 }
 
 func (c *InitCmd) Run() error {
@@ -17,19 +17,14 @@ func (c *InitCmd) Run() error {
 		if err != nil {
 			return fmt.Errorf("read system memory: %w", err)
 		}
-		memory = total - 1024
+		memory = total - 512
 	}
 
 	if err := core.Init(memory); err != nil {
 		return err
 	}
 
-	sdClient, err := core.NewSDClient()
-	if err != nil {
-		return fmt.Errorf("systemd unavailable: %w", err)
-	}
-	defer sdClient.Close()
-	if err := core.EnableDaemon(sdClient); err != nil {
+	if err := core.SDManager.Enable(""); err != nil {
 		return err
 	}
 

@@ -21,13 +21,7 @@ func (c *DeinitCmd) Run() error {
 		}
 	}
 
-	sdClient, err := core.NewSDClient()
-	if err != nil {
-		return err
-	}
-	defer sdClient.Close()
-
-	if err := core.DeInit(sdClient); err != nil {
+	if err := core.DeInit(); err != nil {
 		return err
 	}
 

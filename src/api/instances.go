@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 
 	"mcsd/core"
@@ -10,66 +9,55 @@ import (
 )
 
 func listInstances(w http.ResponseWriter, r *http.Request) {
-	ids := getCachedIDs()
-	results := make([]*instanceData, 0, len(ids))
-	for _, id := range ids {
-		resp, err := buildInstanceData(id)
-		if err != nil {
-			continue
-		}
-		results = append(results, resp)
-	}
-	writeJSON(w, http.StatusOK, results)
+	writeJSON(w, http.StatusOK, getCachedInstances())
 }
 
 func getInstance(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	resp, err := buildInstanceData(id)
+	inst, err := core.LoadInstance(id)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, resp)
-}
-
-type createRequest struct {
-	core.InstanceConfig
-	Ports core.Ports `json:"ports"`
+	writeJSON(w, http.StatusOK, inst)
 }
 
 func createInstance(w http.ResponseWriter, r *http.Request) {
-	var req createRequest
+	var req struct {
+		core.InstanceConfig
+		Ports core.Ports `json:"ports"`
+	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
 
-	vendor := vendors.Get(req.Vendor)
-	if vendor == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("unknown vendor %q", req.Vendor)})
-		return
-	}
-
-	downloadURL, err := vendor.DownloadURL(req.Version)
+	inst, err := core.NewInstance(req.InstanceConfig, req.Ports)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-
-	instance := req.InstanceConfig
-	if err := instance.Create(req.Ports); err != nil {
+	if err := inst.Create(req.Ports); err != nil {
 		writeError(w, err)
 		return
 	}
-	setCachedInstance(req.ID, &instance)
-	if downloadURL != "" {
-		if err := instance.Download(downloadURL); err != nil {
+
+	vendor := vendors.Get(inst.Vendor)
+	if vendor != nil {
+		downloadURL, err := vendor.DownloadURL(inst.Version, inst.Build)
+		if err != nil {
 			writeError(w, err)
 			return
 		}
+		if downloadURL != "" {
+			if err := inst.Download(downloadURL); err != nil {
+				writeError(w, err)
+				return
+			}
+		}
 	}
 
-	resp, err := buildInstanceData(req.ID)
+	resp, err := core.LoadInstance(inst.ID)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -77,60 +65,27 @@ func createInstance(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, resp)
 }
 
-type patchRequest struct {
-	Name       *string  `json:"name"`
-	Vendor     *string  `json:"vendor"`
-	Version    *string  `json:"version"`
-	JavaArgs   []string `json:"java_args"`
-	ServerArgs []string `json:"server_args"`
-	Memory     *int     `json:"memory"`
-}
-
 func patchInstance(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	instance, err := core.LoadInstanceConfig(id)
+	inst, err := core.LoadInstance(id)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 
-	var req patchRequest
+	var req core.PatchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
 
-	if req.Name != nil {
-		instance.Name = *req.Name
-	}
-	if req.Vendor != nil {
-		instance.Vendor = *req.Vendor
-	}
-	if req.Version != nil {
-		instance.Version = *req.Version
-	}
-	if req.JavaArgs != nil {
-		instance.JavaArgs = req.JavaArgs
-	}
-	if req.ServerArgs != nil {
-		instance.ServerArgs = req.ServerArgs
-	}
-	if req.Memory != nil {
-		instance.Memory = *req.Memory
-	}
-
-	if err := instance.Validate(); err != nil {
-		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": err.Error()})
-		return
-	}
-	if err := core.WriteInstanceConfig(id, instance); err != nil {
+	if err := inst.Patch(req); err != nil {
 		writeError(w, err)
 		return
 	}
-	setCachedInstance(id, instance)
 
-	resp, err := buildInstanceData(id)
+	resp, err := core.LoadInstance(id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -140,54 +95,47 @@ func patchInstance(w http.ResponseWriter, r *http.Request) {
 
 func deleteInstance(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	evictRCON(id)
-	if err := core.DeleteByID(id, sdClient); err != nil {
+	closeRCON(id)
+	if err := core.DeleteInstance(id); err != nil {
 		writeError(w, err)
 		return
 	}
-	removeCachedInstance(id)
 	w.WriteHeader(http.StatusNoContent)
 }
 
 func startInstance(w http.ResponseWriter, r *http.Request) {
-	instanceAction(w, r, func(inst *core.InstanceConfig) error {
-		return inst.Start(sdClient)
+	instanceAction(w, r, func(inst *core.Instance) error {
+		return inst.Start()
 	})
 }
 
 func stopInstance(w http.ResponseWriter, r *http.Request) {
-	instanceAction(w, r, func(inst *core.InstanceConfig) error {
-		evictRCON(inst.ID)
-		return inst.Stop(sdClient)
-	})
-}
-
-func restartInstance(w http.ResponseWriter, r *http.Request) {
-	instanceAction(w, r, func(inst *core.InstanceConfig) error {
-		return inst.Restart(sdClient)
+	instanceAction(w, r, func(inst *core.Instance) error {
+		closeRCON(inst.ID)
+		return inst.Stop()
 	})
 }
 
 func enableInstance(w http.ResponseWriter, r *http.Request) {
-	instanceAction(w, r, func(inst *core.InstanceConfig) error {
-		return inst.Enable(sdClient)
+	instanceAction(w, r, func(inst *core.Instance) error {
+		return inst.Enable()
 	})
 }
 
 func disableInstance(w http.ResponseWriter, r *http.Request) {
-	instanceAction(w, r, func(inst *core.InstanceConfig) error {
-		return inst.Disable(sdClient)
+	instanceAction(w, r, func(inst *core.Instance) error {
+		return inst.Disable()
 	})
 }
 
-func instanceAction(w http.ResponseWriter, r *http.Request, fn func(*core.InstanceConfig) error) {
+func instanceAction(w http.ResponseWriter, r *http.Request, fn func(*core.Instance) error) {
 	id := r.PathValue("id")
-	instance, err := cachedInstanceOrError(id)
+	inst, err := core.LoadInstance(id)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if err := fn(instance); err != nil {
+	if err := fn(inst); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -200,53 +148,31 @@ func upgradeInstance(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Vendor  string `json:"vendor"`
 		Version string `json:"version"`
+		Build   int    `json:"build"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
 
-	v := vendors.Get(req.Vendor)
-	if v == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Sprintf("unknown vendor %q", req.Vendor)})
-		return
-	}
-
-	instance, err := cachedInstanceOrError(id)
+	v, err := vendors.Require(req.Vendor)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 
-	status, err := sdClient.Status(core.UnitName(id))
+	inst, err := core.LoadInstance(id)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	if status.State == "active" {
-		writeJSON(w, http.StatusConflict, map[string]string{"error": "server must be stopped before upgrading"})
-		return
-	}
 
-	downloadURL, err := v.DownloadURL(req.Version)
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	if err := instance.Download(downloadURL); err != nil {
+	if err := inst.Upgrade(v, req.Version, req.Build); err != nil {
 		writeError(w, err)
 		return
 	}
 
-	instance.Vendor = req.Vendor
-	instance.Version = req.Version
-	if err := core.WriteInstanceConfig(id, instance); err != nil {
-		writeError(w, err)
-		return
-	}
-	setCachedInstance(id, instance)
-
-	resp, err := buildInstanceData(id)
+	resp, err := core.LoadInstance(id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -264,12 +190,12 @@ func rconInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	instance, err := cachedInstanceOrError(id)
+	inst, err := core.LoadInstance(id)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	response, err := sendRCON(instance, req.Command)
+	response, err := sendRCON(inst, req.Command)
 	if err != nil {
 		writeError(w, err)
 		return

@@ -16,27 +16,25 @@ type rconEntry struct {
 	timer  *time.Timer
 }
 
-var rconCache sync.Map // string → *rconEntry
+var rconConnections sync.Map // string → *rconEntry
 
-func sendRCON(instance *core.InstanceConfig, command string) (string, error) {
-	val, _ := rconCache.LoadOrStore(instance.ID, &rconEntry{})
+func sendRCON(instance *core.Instance, command string) (string, error) {
+	val, _ := rconConnections.LoadOrStore(instance.ID, &rconEntry{})
 	entry := val.(*rconEntry)
 
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
 
+	// Connect to instance if not already connected
 	if entry.client == nil {
-		ports, err := instance.ReadPorts()
-		if err != nil {
-			return "", fmt.Errorf("read ports: %w", err)
-		}
-		client, err := core.DialRCON(fmt.Sprintf("localhost:%d", ports.RCON), ports.RCONPassword)
+		client, err := core.DialRCON(fmt.Sprintf("localhost:%d", instance.Ports.RCON), instance.Ports.RCONPassword)
 		if err != nil {
 			return "", err
 		}
 		entry.client = client
 	}
 
+	// Close connection if idle
 	if entry.timer != nil {
 		entry.timer.Reset(rconIdleTTL)
 	} else {
@@ -59,8 +57,8 @@ func sendRCON(instance *core.InstanceConfig, command string) (string, error) {
 	return resp, nil
 }
 
-func evictRCON(id string) {
-	if val, ok := rconCache.LoadAndDelete(id); ok {
+func closeRCON(id string) {
+	if val, ok := rconConnections.LoadAndDelete(id); ok {
 		entry := val.(*rconEntry)
 		entry.mu.Lock()
 		defer entry.mu.Unlock()

@@ -1,107 +1,59 @@
 package api
 
 import (
-	"fmt"
 	"sync"
 	"time"
 
 	"mcsd/core"
 )
 
+const instanceCacheInterval = 2 * time.Second
+
 var (
-	cacheMu          sync.RWMutex
-	cachedInstances  map[string]*core.InstanceConfig
-	cachedGlobal     *core.Config
-	lastRecache      time.Time
-	recacheMinInterval = time.Second
+	instancesMu     sync.RWMutex
+	cachedInstances []*core.Instance
 )
 
-func forceRecache() {
-	cacheMu.Lock()
-	defer cacheMu.Unlock()
-	doRecacheLocked()
-	lastRecache = time.Now()
+// startInstanceCache refreshes the instance list on a timer so concurrent
+// clients share one read instead of each poll re-deriving state via systemd/D-Bus.
+func startInstanceCache() {
+	refreshInstances()
+	for range time.Tick(instanceCacheInterval) {
+		refreshInstances()
+	}
 }
 
-func recache() {
-	cacheMu.Lock()
-	defer cacheMu.Unlock()
-	if time.Since(lastRecache) < recacheMinInterval {
-		return
-	}
-	doRecacheLocked()
-	lastRecache = time.Now()
-}
-
-func doRecacheLocked() {
-	cfg, err := core.LoadConfig()
-	if err == nil {
-		cachedGlobal = cfg
-	}
-
-	ids, err := core.ListInstanceConfigs()
+func refreshInstances() {
+	results, err := core.ListInstances()
 	if err != nil {
-		return
+		return // keep last good cache on transient error
 	}
-	instances := make(map[string]*core.InstanceConfig, len(ids))
-	for _, id := range ids {
-		inst, err := core.LoadInstanceConfig(id)
-		if err != nil {
-			continue
-		}
-		instances[id] = inst
-	}
-	cachedInstances = instances
+
+	instancesMu.Lock()
+	cachedInstances = results
+	instancesMu.Unlock()
+
+	closeStaleRCON(results)
 }
 
-func getCachedIDs() []string {
-	cacheMu.RLock()
-	defer cacheMu.RUnlock()
-	ids := make([]string, 0, len(cachedInstances))
-	for id := range cachedInstances {
-		ids = append(ids, id)
-	}
-	return ids
-}
-
-func getCachedInstance(id string) (*core.InstanceConfig, bool) {
-	cacheMu.RLock()
-	defer cacheMu.RUnlock()
-	inst, ok := cachedInstances[id]
-	return inst, ok
-}
-
-func getCachedInstances() map[string]*core.InstanceConfig {
-	cacheMu.RLock()
-	defer cacheMu.RUnlock()
+func getCachedInstances() []*core.Instance {
+	instancesMu.RLock()
+	defer instancesMu.RUnlock()
 	return cachedInstances
 }
 
-func getCachedGlobalConfig() *core.Config {
-	cacheMu.RLock()
-	defer cacheMu.RUnlock()
-	return cachedGlobal
-}
-
-func setCachedInstance(id string, inst *core.InstanceConfig) {
-	cacheMu.Lock()
-	defer cacheMu.Unlock()
-	if cachedInstances == nil {
-		cachedInstances = make(map[string]*core.InstanceConfig)
+// closeStaleRCON closes any pooled RCON connection whose instance no longer
+// exists, e.g. deleted via the CLI, which the pool has no other way to learn about.
+func closeStaleRCON(live []*core.Instance) {
+	liveIDs := make(map[string]struct{}, len(live))
+	for _, inst := range live {
+		liveIDs[inst.ID] = struct{}{}
 	}
-	cachedInstances[id] = inst
-}
-
-func removeCachedInstance(id string) {
-	cacheMu.Lock()
-	defer cacheMu.Unlock()
-	delete(cachedInstances, id)
-}
-
-func cachedInstanceOrError(id string) (*core.InstanceConfig, error) {
-	inst, ok := getCachedInstance(id)
-	if !ok {
-		return nil, fmt.Errorf("instance %q not found", id)
-	}
-	return inst, nil
+	rconConnections.Range(func(key, _ any) bool {
+		id := key.(string)
+		if _, ok := liveIDs[id]; !ok {
+			closeRCON(id)
+		}
+		return true
+	})
 }

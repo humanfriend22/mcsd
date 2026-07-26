@@ -4,16 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mcsd/utils"
 	"net/http"
-	"os"
-
-	"mcsd/core"
 )
 
-var (
-	staticHandler http.Handler
-	sdClient      *core.SDClient
-)
+var staticHandler http.Handler
 
 func SetStaticFiles(h http.Handler) {
 	staticHandler = h
@@ -24,15 +19,10 @@ func Serve(port int) error {
 		port = 8080
 	}
 	fmt.Printf("Attempting to start mcsd daemon on port %d\n", port)
-	var err error
-	sdClient, err = core.NewSDClient()
-	if err != nil {
-		return fmt.Errorf("connect to systemd: %w", err)
-	}
-	defer sdClient.Close()
 
-	forceRecache()
 	go initPublicIP()
+	go initLocalIP()
+	go startInstanceCache()
 
 	mux := http.NewServeMux()
 
@@ -44,6 +34,9 @@ func Serve(port int) error {
 	mux.HandleFunc("DELETE /api/instances/{id}", deleteInstance)
 
 	mux.HandleFunc("POST /api/instances/{id}/upgrade", upgradeInstance)
+
+	// Readiness check
+	mux.HandleFunc("GET /api/instances/{id}/ready", checkReady)
 
 	// systemd
 	mux.HandleFunc("POST /api/instances/{id}/start", startInstance)
@@ -62,12 +55,8 @@ func Serve(port int) error {
 	mux.HandleFunc("POST /api/instances/{id}/rcon", rconInstance)
 	mux.HandleFunc("GET /api/instances/{id}/logs", streamLogs)
 
-	// A combined realtime state of instances + host
-	mux.HandleFunc("GET /api/state", getAllStates)
 	mux.HandleFunc("GET /api/vitals", getVitals)
-
-	// Meant to be called once (rarely changes)
-	mux.HandleFunc("GET /api/init", listVendors)
+	mux.HandleFunc("GET /api/init", getInitial)
 
 	if staticHandler != nil {
 		mux.Handle("/", staticHandler)
@@ -89,28 +78,6 @@ func corsMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-type apiPorts struct {
-	Game int `json:"game"`
-	RCON int `json:"rcon"`
-}
-
-type instanceData struct {
-	*core.InstanceConfig
-	Ports *apiPorts `json:"ports,omitempty"`
-}
-
-func buildInstanceData(id string) (*instanceData, error) {
-	config, err := cachedInstanceOrError(id)
-	if err != nil {
-		return nil, err
-	}
-	d := &instanceData{InstanceConfig: config}
-	if ports, err := config.ReadPorts(); err == nil {
-		d.Ports = &apiPorts{Game: ports.Game, RCON: ports.RCON}
-	}
-	return d, nil
-}
-
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -119,8 +86,16 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
-	if errors.Is(err, os.ErrNotExist) {
+	var valErr *utils.ValidationError
+	var notFoundErr *utils.NotFoundError
+	var srvErr *utils.ServerError
+	switch {
+	case errors.As(err, &valErr):
+		status = http.StatusBadRequest
+	case errors.As(err, &notFoundErr):
 		status = http.StatusNotFound
+	case errors.As(err, &srvErr):
+		status = http.StatusInternalServerError
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }

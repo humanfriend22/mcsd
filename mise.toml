@@ -1,11 +1,12 @@
 [env]
 GOOS = "linux"
 GOARCH = "arm64"
-REMOTE = "pi@192.168.64.9"
 _.file = ".env"
 
-[tasks.build-web]
-description = "Generates the Nuxt static site only when web files change"
+# web/
+
+[tasks."build:web"]
+description = "Generates the Nuxt static site"
 dir = "web"
 sources = [
   "app/**/*.vue",
@@ -14,37 +15,54 @@ sources = [
   "nuxt.config.ts",
   "package.json"
 ]
+outputs = [".output/public/**/*"]
 run = "bun run generate"
 
-[tasks.clean-web]
+[tasks."clean:web"]
 run = "rm -rf web/dist web/.output web/.nuxt"
 
-[tasks.embed]
-description = "Copy the built web into the Go embed"
-depends = ["build-web"]
+[tasks."embed"]
+description = "Copy the built web assets into the Go embed"
 run = "rm -rf src/web/dist && cp -r web/.output/public src/web/dist"
 
-[tasks.build]
-description = "Builds the Go project (optimized for binary size)"
-depends = ["embed"]
-run = 'go build -C src -tags embed_web -ldflags="-s -w" -o ../mcsd .'
+# src/
 
-[tasks.clean]
+[tasks."build:go"]
+description = "Compiles the Go binary (optimized for size)"
+run = 'go build -C src -ldflags="-s -w" -o ../mcsd .'
+
+[tasks."clean:go"]
 run = "rm -f mcsd"
 
-[tasks.deploy]
-description = "Deploy binary to Pi"
-depends = ["build"]
+[tasks.build]
+description = "Full build: fresh web + embed + Go binary"
+run = [{ task = "build:web" }, { task = "embed" }, { task = "build:go" }]
+
+[tasks."build:hot"]
+description = "Go binary only, re-embedding whatever web build already exists"
+run = [{ task = "embed" }, { task = "build:go" }]
+
+[tasks._deploy]
+hide = true
 run = '''
-ssh -t $REMOTE "sudo mcsd stop"
-scp mcsd $REMOTE:/tmp/mcsd
-ssh -t $REMOTE "sudo cp /tmp/mcsd /usr/local/bin/mcsd && sudo mcsd start"
+ssh -t $REMOTE_USER@$REMOTE_IP "sudo mcsd stop || true"
+scp mcsd $REMOTE_USER@$REMOTE_IP:/tmp/mcsd
+ssh -t $REMOTE_USER@$REMOTE_IP "sudo cp /tmp/mcsd /usr/local/bin/mcsd && sudo mcsd start"
 '''
 
-[tasks.deploy-rsync]
-description = "Deploy binary to Pi"
-depends = ["build"]
-run = "rsync -W --no-compress mcsd rsync://$REMOTE/home/bin/mcsd"
+[tasks.deploy]
+description = "Build web + backend, deploy to the VM, and restart the service"
+run = [{ task = "build" }, { task = "_deploy" }]
+
+[tasks."deploy:hot"]
+description = "Build backend only (stale frontend), deploy to the VM, and restart the service"
+run = [{ task = "build:hot" }, { task = "_deploy" }]
+
+[tasks."dev:web"]
+description = "Run the Nuxt dev server"
+dir = "web"
+env = { NUXT_PUBLIC_API_HOST = "{{env.REMOTE_IP}}" }
+run = "bun run dev"
 
 [tools]
 bun = "latest"

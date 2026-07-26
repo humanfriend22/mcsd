@@ -15,7 +15,7 @@ type SystemdCmd struct {
 }
 
 type SystemdLaunchCmd struct {
-	ID string `arg:"" help:"InstanceConfig ID"`
+	ID string `arg:"" help:"Instance ID"`
 }
 
 func (c *SystemdLaunchCmd) Run() error {
@@ -23,15 +23,15 @@ func (c *SystemdLaunchCmd) Run() error {
 }
 
 type SystemdStopCmd struct {
-	ID string `arg:"" help:"InstanceConfig ID"`
+	ID string `arg:"" help:"Instance ID"`
 }
 
 func (c *SystemdStopCmd) Run() error {
-	instance, err := loadInstance(c.ID)
+	inst, err := loadInstance(c.ID)
 	if err != nil {
 		return err
 	}
-	resp, err := instance.RCON("stop")
+	resp, err := inst.RCON("stop")
 	if err != nil {
 		// Non-fatal: systemd will SIGKILL after TimeoutStopSec anyway.
 		fmt.Printf("RCON stop failed (server may already be down): %v\n", err)

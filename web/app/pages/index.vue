@@ -4,35 +4,13 @@ import {
   HardwareChipOutline, ServerOutline, SaveOutline, LayersOutline
 } from '@vicons/ionicons5'
 import { formatMemoryMB } from '~/utils/format'
-import { useInstances, useVitals } from '~/api'
-import type { Snapshot } from '~/api'
+import { useInstances, useVitals } from '~/services/api'
 
-const { instances, loaded } = useInstances()
-const { snapshot } = useVitals()
-
-const mockSnapshot: Snapshot = {
-  host: {
-    memory_total: 8192,
-    memory_used: 3200,
-    load_avg_1: 0.74,
-    cpu_cores: 4,
-    disk_total_gb: 64,
-    disk_used_gb: 18,
-  },
-  budget: {
-    total: 6144,
-    used: 3000,
-  },
-}
-
-async function refreshSnapshot() {
-  if (import.meta.dev && !snapshot.value) snapshot.value = mockSnapshot
-}
-
-onMounted(refreshSnapshot)
+const vitals = useVitals()
+const instances = useInstances()
 
 const hostStats = computed(() => {
-  const h = snapshot.value?.host
+  const h = vitals.value?.host
   if (!h) return []
   const ramPct = Math.round((h.memory_used / h.memory_total) * 100)
   const diskPct = Math.round((h.disk_used_gb / h.disk_total_gb) * 100)
@@ -59,7 +37,7 @@ const hostStats = computed(() => {
 })
 
 const budgetStats = computed(() => {
-  const b = snapshot.value?.budget
+  const b = vitals.value?.budget
   if (!b) return null
   return {
     pct: Math.min(Math.round((b.used / b.total) * 100), 100),
@@ -79,7 +57,7 @@ function thresholdColor(pct: number) {
     <h1 class="text-xl font-bold mb-6">Dashboard</h1>
 
     <!-- Host vitals -->
-    <div v-if="snapshot" class="mb-6 grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div v-if="vitals" class="mb-6 grid grid-cols-2 md:grid-cols-4 gap-4">
       <n-card v-for="stat in hostStats" :key="stat.label" size="small" :bordered="true">
         <div class="flex items-center gap-1.5 text-[13px] text-neutral-400 mb-2">
           <NIcon :component="stat.icon" :size="14" />
@@ -100,7 +78,7 @@ function thresholdColor(pct: number) {
       </n-card>
     </div>
 
-    <div v-if="!loaded" class="flex justify-center py-12">
+    <div v-if="!instances" class="flex justify-center py-12">
       <n-spin size="large" />
     </div>
 

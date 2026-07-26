@@ -11,10 +11,10 @@ import {
   readFile,
   uploadFile,
   writeFile,
-} from '~/api'
-import type { FileEntry } from '~/api'
+} from '~/services/api'
+import type { FileEntry } from '~/services/api'
 
-const props = defineProps<{ instanceId: string }>()
+const { instanceId } = defineProps<{ instanceId: string }>()
 
 const message = useMessage()
 
@@ -49,7 +49,7 @@ async function navigate(path: string) {
   selectedFile.value = null
   currentPath.value = path
   loadingDir.value = true
-  const data = await listFiles(props.instanceId, path)
+  const data = await listFiles(instanceId, path)
   if (data) {
     entries.value = [...data].sort((a, b) => {
       if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
@@ -83,7 +83,7 @@ async function openEntry(entry: FileEntry) {
   if (!isText(entry.name)) return
 
   loadingFile.value = true
-  const content = await readFile(props.instanceId, entryPath(entry.name))
+  const content = await readFile(instanceId, entryPath(entry.name))
   if (content) {
     editorContent.value = content
     originalContent.value = content
@@ -100,7 +100,7 @@ function closeEditor() {
 async function saveFile() {
   if (!selectedFile.value) return
   saving.value = true
-  const ok = await writeFile(props.instanceId, entryPath(selectedFile.value.name), editorContent.value)
+  const ok = await writeFile(instanceId, entryPath(selectedFile.value.name), editorContent.value)
   if (ok) {
     originalContent.value = editorContent.value
     message.success('Saved')
@@ -109,8 +109,8 @@ async function saveFile() {
 }
 
 async function deleteEntry(entry: FileEntry) {
-  const ok = await deleteFile(props.instanceId, entryPath(entry.name))
-  if (ok !== null) {
+  const ok = await deleteFile(instanceId, entryPath(entry.name))
+  if (ok) {
     message.success(`Deleted ${entry.name}`)
     await navigate(currentPath.value)
   }
@@ -119,7 +119,7 @@ async function deleteEntry(entry: FileEntry) {
 async function uploadFiles(files: FileList | File[]) {
   let n = 0
   for (const file of Array.from(files)) {
-    const ok = await uploadFile(props.instanceId, currentPath.value, file)
+    const ok = await uploadFile(instanceId, currentPath.value, file)
     if (ok) n++
   }
   if (n > 0) {

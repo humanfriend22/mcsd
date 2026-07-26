@@ -10,16 +10,16 @@ import (
 )
 
 type EditCmd struct {
-	ID string `arg:"" help:"InstanceConfig ID"`
+	ID string `arg:"" help:"Instance ID"`
 }
 
 func (c *EditCmd) Run() error {
-	instance, err := loadInstance(c.ID)
+	cfg, err := core.LoadInstanceConfig(c.ID)
 	if err != nil {
 		return err
 	}
 
-	raw, err := json.Marshal(instance)
+	raw, err := json.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal instance: %w", err)
 	}

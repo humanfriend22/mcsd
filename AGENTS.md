@@ -1,378 +1,419 @@
-# AGENTS.md
+# mcsd — Minecraft Server Daemon
 
-Authoritative reference for AI agents working in this repo. Supersedes `PLAN.md` and `CLAUDE.md` where they conflict — both are stale.
+A self-hosted Minecraft server manager for Linux (primarily Raspberry Pi) with deep systemd integration. Manages multiple server instances via systemd template units, enforces memory budgets, and provides both a REST API and a web UI.
 
----
-
-## Build & Deploy
-
-```bash
-# Cross-compile for Raspberry Pi (arm64 Linux)
-make build          # GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o mcsd .
-
-# Build + rsync to Pi + install
-make deploy         # default PI=pi@raspberrypi.local
-PI=user@host make deploy
-                    # Uses ssh -t (required on Raspberry Pi OS Bookworm+ — passwordless sudo removed)
-
-make clean
-```
-
-No tests. Validation = smoke test on Pi.
-
-Run locally (skips systemd code paths):
-```bash
-go build -o mcsd . && ./mcsd --help
-```
-
----
-
-## Architecture
-
-Single static binary, two runtime roles:
-
-1. **CLI** (`mcsd <command>`) — stateless; reads filesystem + queries systemd D-Bus.
-2. **HTTP daemon** (`mcsd systemd serve`) — REST API for instance management, SSE log streaming, file browser. Installed as `mcsd.service`.
-
-The hidden `systemd` subcommand group is called only by systemd as `ExecStart=`/`ExecStop=`. Users never call it directly.
-
-### Package responsibilities
-
-| Package | Role |
-|---------|------|
-| `cli/` | Kong command structs + interactive prompts. Zero business logic — delegates entirely to `core` and `api`. |
-| `core/` | All server management: config I/O, systemd D-Bus, RCON, instance lifecycle, launch. |
-| `api/` | HTTP handlers, SSE log streaming, file browser, vendor discovery. |
-| `vendors/` | Pluggable server type registry. Adding a vendor = implement the `Vendor` interface. |
-
-### Execution model
+## Architecture Overview
 
 ```
-mcsd start <id>
-  → D-Bus StartUnit
-  → systemd ExecStart = mcsd systemd launch <id>
-      core.Launch(id):
-        assert INVOCATION_ID set
-        LoadInstance(id)
-        resolveArgv()
-        os.Chdir(InstanceDir(id))
-        syscall.Exec()   ← process replaced by JVM/binary
-
-mcsd stop <id>
-  → D-Bus StopUnit
-  → systemd ExecStop = mcsd systemd stop <id>
-      instance.RCON("stop")   ← graceful shutdown
-      TimeoutStopSec=120 → SIGKILL backstop
+mcsd/
+├── src/                    # Go backend
+│   ├── main.go             # Entry point: init D-Bus → CLI dispatch
+│   ├── core/               # Business logic: instances, systemd, RCON, config
+│   ├── api/                # HTTP REST API handlers
+│   ├── cli/                # Kong CLI commands (interactive + daemon)
+│   ├── vendors/            # Pluggable server type registry
+│   ├── helpers/            # ID validation, atomic file writes
+│   └── web/                # go:embed for Nuxt SPA (build tag: embed_web)
+├── web/                    # Nuxt 4 SPA (Vue 3 + NaiveUI + Tailwind)
+│   └── app/
+│       ├── services/api.ts # Centralized API client + reactive state + polling
+│       ├── components/     # UI components (ServerCard, FileBrowser, etc.)
+│       ├── pages/          # Routes: index (dashboard), instances/[id]
+│       └── composables/    # useInstance wrapper
+├── test/                   # Standalone systemd D-Bus test tool
+├── compose.yml             # Docker dev environment (Debian + systemd)
+├── Dockerfile              # Multi-stage: jrei/systemd-debian + OpenJDK 25
+└── mise.toml               # Task runner: build, embed, deploy pipeline
 ```
 
-`mcsd create` provisions and registers the unit but does **not** enable it. Use `mcsd enable <id>` for start-on-boot.
+## Go Backend (`src/`)
 
-### Storage layout (runtime, on the Pi)
+### Module & Dependencies
+
+- **Module**: `mcsd` (Go 1.26.3)
+- **CLI framework**: `github.com/alecthomas/kong`
+- **Interactive forms**: `github.com/charmbracelet/huh`
+- **TUI (console)**: `github.com/gdamore/tcell/v2`
+- **systemd D-Bus**: `github.com/coreos/go-systemd/v22`
+- **Raw D-Bus**: `github.com/godbus/dbus/v5`
+
+### Package Responsibilities
+
+#### `core/` — Business Logic
+
+| File | Responsibility |
+|------|---------------|
+| `core.go` | Global init/deinit, systemd service file embedding, `EnsureReady()` |
+| `instance.go` | `Instance` struct, `Launch()` (ExecStart), `resolveArgs()`, memory budget checks |
+| `instance_config.go` | `InstanceConfig` JSON schema, `Load/WriteInstanceConfig()`, `ValidateIDUnique()` |
+| `instance_model.go` | `LoadInstance()`, `ListInstances()`, CRUD methods, RCON, enable/disable |
+| `config.go` | Global `Config` (memory budget, port), `/proc/meminfo` reader |
+| `systemd.go` | `sdManager` — D-Bus wrapper for Start/Stop/Enable/Disable/Status/List/ActiveStats |
+| `ports.go` | `Ports` struct, `ReadPorts()` / `WriteServerProperties()` (server.properties) |
+| `rcon.go` | Full RCON protocol client (auth, send, recv) |
+| `java.go` | `DiscoverJavaBinaries()` — scans PATH/JAVA_HOME, parses `java -version` |
+| `errors.go` | `ValidationError`, `NotFoundError` (used for HTTP status mapping) |
+| `services/` | Embedded systemd unit files |
+
+**Key patterns:**
+- `InstanceConfig` is a pure JSON data struct — no methods except `Validate()`
+- `Instance` embeds `*InstanceConfig` and adds runtime state (ports, state, uptime, memory)
+- `LoadInstance(id)` assembles an `Instance` from config.json + server.properties + systemd D-Bus
+- All file writes use `WriteAtomic()` (write to `.tmp`, then rename)
+- `SDManager` is a package-level singleton initialized once per process via `InitSDManager()`
+
+#### `api/` — HTTP REST API
+
+| File | Endpoint(s) |
+|------|------------|
+| `api.go` | Route registration, CORS middleware, JSON helpers |
+| `instances.go` | CRUD: `GET/POST/PATCH/DELETE /api/instances[/{id}]`, `POST .../start|stop|enable|disable|upgrade|rcon` |
+| `state.go` | `GET /api/state` — real-time run state for all instances (includes pre-start readiness check) |
+| `snapshot.go` | `GET /api/vitals` — host vitals (RAM, CPU, disk) + memory budget usage |
+| `vendors.go` | `GET /api/init` — vendors list, public IP, discovered Java binaries |
+| `files.go` | `GET/POST/DELETE /api/instances/{id}/files` — file browser (list, read, write, upload, delete) |
+| `logs.go` | `GET /api/instances/{id}/logs` — SSE stream via `journalctl -f` |
+| `ready.go` | `GET /api/instances/{id}/ready` — readiness check (ports + memory budget) |
+| `rcon_cache.go` | In-memory RCON connection cache with 30s idle TTL |
+
+**Error mapping:**
+- `ValidationError` → 400 Bad Request
+- `NotFoundError` → 404 Not Found
+- Everything else → 500 Internal Server Error
+
+#### `cli/` — Kong CLI
 
 ```
-/srv/mcsd/config.json                                          # global: memory_budget, port
-/srv/mcsd/instances/<id>/config.json                           # instance definition (InstanceConfig)
-/srv/mcsd/instances/<id>/server.properties                     # written once at create; source of truth for ports
-/etc/systemd/system/mcsd.service                               # daemon unit (embedded in binary)
-/etc/systemd/system/mcsd-server@.service                       # instance template unit (embedded in binary)
-/etc/systemd/system/mcsd-server@<id>.service.d/override.conf   # MemoryMax= per instance
+mcsd init [--memory MB]       # Set up systemd services + config
+mcsd deinit [-f]              # Tear down everything
+
+mcsd instance create          # Interactive wizard (huh forms)
+mcsd instance start <id>
+mcsd instance stop <id>
+mcsd instance restart <id>
+mcsd instance status [id]     # Proxies to `systemctl status`
+mcsd instance list
+mcsd instance delete <id> [-f]
+mcsd instance enable <id>
+mcsd instance disable <id>
+mcsd instance rcon <id> <cmd>
+mcsd instance edit <id>       # Opens config.json in $EDITOR
+mcsd instance console <id>    # Full TUI: live logs + RCON input (tcell)
+
+mcsd start                    # Start mcsd.service (daemon)
+mcsd stop
+mcsd enable
+mcsd disable
+mcsd status
+
+mcsd systemd launch <id>      # ExecStart= handler (called by systemd)
+mcsd systemd stop <id>        # ExecStop= handler (RCON stop)
+mcsd systemd serve            # HTTP daemon entry point
 ```
 
----
+- All commands except `init`/`deinit` require `EnsureReady()` to pass
+- `BeforeApply` hook in Kong handles this check
 
-## Key invariants
+#### `vendors/` — Server Type Registry
 
-- `core.CheckInit()` called at the top of every CLI command `Run()` except `init`/`deinit`.
-- All config/instance writes go through `writeAtomic()` (write to `.tmp`, then `os.Rename`) — never `os.WriteFile` directly on live paths.
-- `InstanceDir(id)` is always `DefaultBasePath + "/" + id`. No per-struct base path field.
-- `server.properties` is written once at create (`initServerProperties`), then owned by the user. mcsd reads it; never overwrites. Source of truth for game port, RCON port, and RCON password. (ADR-0001)
-- `core.Launch()` aborts if `INVOCATION_ID` env var is absent.
-- `CheckBudget()` is called inside `instance.Start()` before the D-Bus call.
-- `LoadInstance()` wraps `os.ErrNotExist` with `%w` — the API layer uses `errors.Is(err, os.ErrNotExist)` to return 404.
-- The systemd service files are embedded via `//go:embed` in `core/core.go`. Editing `core/services/*.service` changes what `mcsd init` installs.
-- Memory enforcement = systemd `MemoryMax=` drop-in written by `instance.WriteDropIn()`.
+| File | Vendor |
+|------|--------|
+| `vendors.go` | `Vendor` interface, `All` slice, `Get()`, `IsValid()`, `Executable()` |
+| `fabric.go` | Fabric — fetches versions from `meta.fabricmc.net`, builds download URL |
+| `http.go` | `getJSON()`, `DownloadFile()` utilities |
 
----
+Currently only Fabric is registered. Bedrock is referenced but not implemented in `All`.
 
-## Package reference
+**Adding a vendor**: Implement the `Vendor` interface (Name, Versions, DownloadURL) and append to `All`.
 
-### `core/`
+#### `helpers/` — Utilities
 
-**`core.go`** — constants, embedded service files, init/deinit.
+- `ValidateID(id)` — regex `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`, blocks `..` and `/`
+- `WriteAtomic(path, data, mode)` — write to `.tmp` then `os.Rename`
+
+### Systemd Integration
+
+**Unit files** (embedded via `//go:embed`):
+
+| Unit | Purpose |
+|------|---------|
+| `mcsd.service` | HTTP daemon — `ExecStart=/usr/local/bin/mcsd systemd serve` |
+| `mcsd-instance@.service` | Per-instance — `ExecStart=/usr/local/bin/mcsd systemd launch %i` |
+
+**Instance template unit features:**
+- `MemoryAccounting=yes` — tracks per-instance memory via D-Bus
+- `LogNamespace=mcsd-%i` — isolated journal per instance
+- Sandboxing: `NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`, `ReadWritePaths` limited to instance dir
+- `TimeoutStopSec=120` with `SendSIGKILL=yes` — graceful shutdown via RCON `stop` command
+- `StartLimitBurst=3` / `StartLimitIntervalSec=60` — crash loop protection
+
+**D-Bus operations** (via `sdManager`):
+- Start/Stop/Restart/Enable/Disable/ResetFailed/Reload
+- Status (ActiveState, SubState)
+- IsEnabled (via raw D-Bus `GetUnitFileState`)
+- ActiveStats (ActiveEnterTimestamp + MemoryCurrent)
+- List (by glob pattern)
+
+### Data Model
 
 ```go
-const DefaultBasePath  = "/srv/mcsd/instances"
-const GlobalConfigPath = "/srv/mcsd/config.json"
-const DaemonServicePath         = "/etc/systemd/system/mcsd.service"
-const DaemonServiceTemplatePath = "/etc/systemd/system/mcsd-server@.service"
-
-Init(memoryBudget int) error          // write config + service files
-InitSystemd(client *SystemdClient) error
-DeInit(client *SystemdClient) error   // full teardown
-EnsureReady() error                   // verify installation + clean orphans
-```
-
-**`config.go`**
-
-```go
-type Config struct {
-    MemoryBudget int `json:"memory_budget"`
-    Port         int `json:"port,omitempty"` // daemon HTTP port; 0 = default 8080
-}
-
-TotalSystemMemory() (int, error)   // reads /proc/meminfo
-LoadConfig() (*Config, error)
-WriteConfig(cfg *Config) error
-```
-
-**`instance.go`** — all instance logic in one file.
-
-```go
+// Persisted to /srv/mcsd/instances/<id>/config.json
 type InstanceConfig struct {
     ID         string   `json:"id"`
     Name       string   `json:"name"`
-    Type       string   `json:"type"`
-    Version    string   `json:"mc_version,omitempty"`
-    Executable string   `json:"executable"`
-    JavaArgs   []string `json:"java_args,omitempty"`
-    ServerArgs []string `json:"server_args,omitempty"`
-    Memory     int      `json:"memory"`
+    Vendor     string   `json:"vendor"`
+    Version    string   `json:"version"`
+    Binary     string   `json:"binary"`        // java binary path (empty = "java")
+    JavaArgs   []string `json:"java_args"`
+    ServerArgs []string `json:"server_args"`
+    Memory     int      `json:"memory"`         // MB
 }
 
-// Ports is never persisted — always read from server.properties at runtime.
+// Full runtime representation
+type Instance struct {
+    *InstanceConfig
+    Ports         Ports  `json:"ports"`           // from server.properties
+    State         string `json:"state"`           // from systemd
+    Enabled       bool   `json:"enabled"`         // from systemd
+    UptimeSeconds int    `json:"uptime_seconds"`
+    MemoryUsed    int    `json:"memory_used"`     // MB from D-Bus
+}
+
 type Ports struct {
-    Game         int
-    RCON         int
-    RCONPassword string  // never exposed in API responses
+    Game         int    `json:"game"`
+    RCON         int    `json:"rcon"`
+    RCONPassword string `json:"rcon_password"`
 }
 
-type CreateRequest struct {
-    Instance    InstanceConfig
-    Ports       Ports
-    DownloadURL string
+// Global config at /srv/mcsd/config.json
+type Config struct {
+    MemoryBudget int `json:"memory_budget"`  // total MB across all instances
+    Port         int `json:"port"`           // daemon HTTP port (default 8080)
+}
+```
+
+**Filesystem layout per instance** (`/srv/mcsd/instances/<id>/`):
+```
+config.json          # InstanceConfig
+server.properties    # game/rcon ports (written by mcsd)
+eula.txt             # eula=true
+server.jar           # Fabric JAR (downloaded)
+```
+
+### Memory Budget System
+
+- Global `Config.MemoryBudget` sets total RAM cap
+- `ReservedMemory(excludeID)` sums `Memory` from all **active** instances
+- `EnabledMemory(excludeID)` sums `Memory` from all **enabled** instances
+- Checked before: `Start()`, `Enable()`, `Create()`
+- On startup, budget is capped to `system RAM - 512 MB` if config exceeds physical RAM
+
+## Web Frontend (`web/`)
+
+### Stack
+
+- **Nuxt 4** (SPA mode, `ssr: false`)
+- **Vue 3** Composition API
+- **NaiveUI** component library (dark theme)
+- **Tailwind CSS**
+- **@vueuse/core** for `useEventSource`
+- **Bun** as package manager / build tool
+
+### Structure
+
+```
+web/app/
+├── app.vue                 # Root: sidebar navigation + NuxtPage outlet
+├── services/
+│   ├── api.ts              # Single source of truth: types, fetch, state, polling, composables
+│   └── error.ts            # NaiveUI discrete message API for error toasts
+├── components/
+│   ├── ServerCard.vue      # Dashboard grid card
+│   ├── InstanceHeader.vue  # Detail page header
+│   ├── InstanceOverviewTab.vue  # Controls, stats, logs, RCON
+│   ├── InstanceSettingsTab.vue  # Edit config, upgrade, delete
+│   ├── InstanceStatCard.vue     # Reusable stat card with progress bar
+│   ├── FileBrowser.vue          # REST file browser
+│   ├── LogViewer.vue            # Log display component
+│   └── StatusDot.vue            # Colored state indicator
+├── pages/
+│   ├── index.vue           # Dashboard: host vitals + instance grid
+│   └── instances/[id].vue  # Instance detail page
+├── composables/
+│   └── useInstance.ts      # Single-instance wrapper around useInstances()
+└── utils/
+    └── format.ts           # formatUptime(), formatMemoryMB()
+```
+
+### API Layer (`services/api.ts`)
+
+**All backend communication goes through this single file.** It acts as both API client and state store (module-level `ref()`s shared via ES module singleton semantics — no Pinia/Vuex).
+
+**Types exported:**
+- `Instance` — merged config + runtime state
+- `InstanceState` — `'active' | 'inactive' | 'activating' | 'deactivating' | 'failed'`
+- `Vitals` — host system metrics + memory budget
+- `InitData` — vendors, public IP, Java binaries
+- `FileEntry` — file browser entry
+
+**Polling:**
+- Instance states: `GET /api/state` every 1s (via `useInstances()`)
+- Host vitals: `GET /api/vitals` every 5s (via `useVitals()`)
+- Init data: `GET /api/init` once on load (via `useInit()`)
+- Live logs: SSE via `EventSource` (via `useInstanceLogs(id)`)
+
+**Request infrastructure:**
+- `sendRequest()` — for mutations (POST/PATCH/DELETE), returns boolean
+- `sendDataRequest<T>()` — for reads + JSON mutations, returns typed data
+- In dev mode, requests proxy to `http://raspberrypi.local:8080`
+
+## API Reference
+
+### Instance Endpoints
+
+| Method | Path | Handler | Response |
+|--------|------|---------|----------|
+| `GET` | `/api/instances` | `listInstances` | `Instance[]` |
+| `GET` | `/api/instances/{id}` | `getInstance` | `Instance` |
+| `POST` | `/api/instances` | `createInstance` | `Instance` (201) |
+| `PATCH` | `/api/instances/{id}` | `patchInstance` | `Instance` |
+| `DELETE` | `/api/instances/{id}` | `deleteInstance` | 204 |
+
+### Action Endpoints
+
+| Method | Path | Handler | Response |
+|--------|------|---------|----------|
+| `POST` | `/api/instances/{id}/start` | `startInstance` | 204 |
+| `POST` | `/api/instances/{id}/stop` | `stopInstance` | 204 |
+| `POST` | `/api/instances/{id}/enable` | `enableInstance` | 204 |
+| `POST` | `/api/instances/{id}/disable` | `disableInstance` | 204 |
+| `POST` | `/api/instances/{id}/upgrade` | `upgradeInstance` | `Instance` |
+| `POST` | `/api/instances/{id}/rcon` | `rconInstance` | `{ response: string }` |
+| `GET` | `/api/instances/{id}/ready` | `checkReady` | `{ ready: bool, error: string }` |
+
+### System Endpoints
+
+| Method | Path | Handler | Response |
+|--------|------|---------|----------|
+| `GET` | `/api/state` | `getAllStates` | `Record<string, InstanceRunState>` |
+| `GET` | `/api/vitals` | `getVitals` | `Snapshot` |
+| `GET` | `/api/init` | `listVendors` | `InitData` |
+
+### File Endpoints
+
+| Method | Path | Handler | Response |
+|--------|------|---------|----------|
+| `GET` | `/api/instances/{id}/files` | `listFiles` | `FileEntry[]` |
+| `GET` | `/api/instances/{id}/files/content` | `readFile` | Raw binary |
+| `POST` | `/api/instances/{id}/files/content` | `writeFile` | 204 |
+| `DELETE` | `/api/instances/{id}/files` | `deleteFile` | 204 |
+| `POST` | `/api/instances/{id}/files` | `uploadFile` | `{ path: string }` (201) |
+
+### Streaming Endpoints
+
+| Method | Path | Handler | Response |
+|--------|------|---------|----------|
+| `GET` | `/api/instances/{id}/logs` | `streamLogs` | SSE (`text/event-stream`) |
+
+### Response Shapes
+
+```typescript
+// GET /api/state
+type InstanceRunState = {
+    state: 'active' | 'inactive' | 'failed' | 'activating' | 'deactivating'
+    enabled: boolean
+    active_since?: string    // ISO timestamp (only when active)
+    memory_used?: number     // MB (only when active)
+    start_check?: string     // error message (only when NOT active)
 }
 
-InstanceDir(id string) string
-LoadInstance(id string) (*InstanceConfig, error)      // wraps os.ErrNotExist with %w for 404 detection
-WriteInstance(id string, inst *InstanceConfig) error
-ListInstances() ([]string, error)
-ValidateID(id string) error
-ValidatePorts(ports Ports) error
-CheckPortConflict(excludeID string, ports Ports) error
-CheckPortConflictRunning(excludeID string, ports Ports, client *SystemdClient) error
-CheckBudget(config *Config, client *SystemdClient, newMemMB int) error
-DeleteByID(id string, client *SystemdClient) error
-
-(i *InstanceConfig) Validate() error
-(i *InstanceConfig) Create(client *SystemdClient, ports Ports) error   // provision dir, write files, register unit
-(i *InstanceConfig) Delete(client *SystemdClient) error
-(i *InstanceConfig) Start(client *SystemdClient) error                 // checks budget + port conflicts
-(i *InstanceConfig) Stop/Restart(client *SystemdClient) error
-(i *InstanceConfig) Enable/Disable(client *SystemdClient) error
-(i *InstanceConfig) Status(client *SystemdClient) (*ServiceStatus, error)
-(i *InstanceConfig) Download(url string) error
-(i *InstanceConfig) ReadPorts() (Ports, error)                         // reads server.properties
-(i *InstanceConfig) WriteDropIn() error                                // MemoryMax= systemd drop-in
-(i *InstanceConfig) RCON(cmd string) (string, error)
-
-// Launch — syscall.Exec entry point for systemd ExecStart
-Launch(id string) error
-AikarFlags []string   // recommended JVM GC flags
-```
-
-**`systemd.go`**
-
-```go
-type ServiceStatus struct {
-    Name, State string
-    ActiveSince time.Time
+// GET /api/vitals
+type Snapshot = {
+    host: {
+        memory_total: number   // MB
+        memory_used: number    // MB
+        load_avg_1: number
+        cpu_cores: number
+        disk_total_gb: number
+        disk_used_gb: number
+    }
+    budget: {
+        total: number          // from config.json
+        used: number           // sum of active instances
+    }
 }
 
-NewSystemdClient() (*SystemdClient, error)
-(c *SystemdClient) Close()
-(c *SystemdClient) Start/Stop/Restart(unit string) error
-(c *SystemdClient) Status(unit string) (*ServiceStatus, error)
-(c *SystemdClient) ActiveSince(unit string) (time.Time, error)
-(c *SystemdClient) List(pattern string) ([]ServiceStatus, error)
-(c *SystemdClient) Reload() error
-(c *SystemdClient) Enable/Disable(unit string) error
-UnitToID(unit string) string   // "mcsd-server@foo.service" → "foo"
-```
-
-**`rcon.go`**
-
-```go
-DialRCON(addr, password string) (*RCONClient, error)
-(c *RCONClient) Send(cmd string) (string, error)
-(c *RCONClient) Close() error
-```
-
-**`helpers.go`**
-
-```go
-writeAtomic(path string, data []byte, mode os.FileMode) error
-```
-
----
-
-### `api/`
-
-**`api.go`** — entry point, shared types, route registration.
-
-```go
-Serve(port int) error   // port 0 = 8080
-
-// instanceResponse embeds *InstanceConfig — all config fields appear flat in JSON
-type instanceResponse struct {
-    *core.InstanceConfig
-    Ports  *instancePorts `json:"ports,omitempty"`   // nil if server.properties unreadable
-    Status instanceStatus `json:"status"`
+// GET /api/init
+type InitData = {
+    vendors: { name: string; versions: string[] }[]
+    public_ip: string
+    local_ip: string
+    java_binaries: { path: string; version: string; vendor: string }[]
 }
-
-buildInstanceResponse(id string, client *core.SystemdClient) (*instanceResponse, error)
-writeJSON(w, status, v)
-writeError(w, err)   // maps os.ErrNotExist → 404
 ```
 
-**Routes:**
+## Key Constants & Paths
 
-```
-GET    /instances                        list all
-POST   /instances                        create + download JAR
-GET    /instances/{id}
-PATCH  /instances/{id}                   JSON Merge Patch semantics (pointer fields)
-DELETE /instances/{id}
+| Constant | Value |
+|----------|-------|
+| `DefaultBasePath` | `/srv/mcsd/instances` |
+| `GlobalConfigPath` | `/srv/mcsd/config.json` |
+| `DaemonServicePath` | `/etc/systemd/system/mcsd.service` |
+| `DaemonServiceTemplatePath` | `/etc/systemd/system/mcsd-instance@.service` |
+| Default HTTP port | `8080` |
+| Min instance memory | `512 MB` |
+| Min system reserve | `512 MB` |
+| RCON idle TTL | `30 seconds` |
+| Instance ID regex | `^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$` |
 
-POST   /instances/{id}/start
-POST   /instances/{id}/stop
-POST   /instances/{id}/restart
-POST   /instances/{id}/enable
-POST   /instances/{id}/disable
-POST   /instances/{id}/upgrade           {vendor, versions} → re-download JAR + update config; 409 if running
+## Build Pipeline
 
-POST   /instances/{id}/rcon              {command} → {response}
-GET    /instances/{id}/logs              SSE stream; logs since last server start
+```bash
+# Development
+cd web && bun run dev          # Nuxt dev server
 
-GET    /instances/{id}/files             list dir  (?path=)
-GET    /instances/{id}/files/content     read file (?path=)
-POST   /instances/{id}/files/content     write file (?path=) — atomic write
-DELETE /instances/{id}/files             delete file/dir (?path=); cannot delete instance root
-POST   /instances/{id}/files             multipart upload (?path=destdir)
-
-GET    /vendors                          list vendors + version fields + available options
-```
-
-**`logs.go`** — SSE via `journalctl -u mcsd-server@<id>.service -f --output=cat --since=<ActiveSince>`. Uses `r.Context()` for cleanup on disconnect.
-
-**`files.go`** — `safeJoin(base, relPath)` rejects paths that escape the instance directory. `atomicWrite` used for all file writes.
-
----
-
-### `vendors/`
-
-```go
-type VersionField struct {
-    Name    string
-    Options func() ([]string, error)   // nil = free-form input
-}
-
-type Vendor interface {
-    Name() string
-    VersionFields() []VersionField
-    DownloadURL(v VersionSelection) string
-}
-
-type VersionSelection map[string]string
-
-var All []Vendor   // registration order = display order
-Lookup(name string) Vendor
-IsValid(name string) bool
+# Production build
+mise run build-web             # bun run generate → web/dist
+mise run embed                 # cp web/.output/public → src/web/dist
+mise run build                 # go build -tags embed_web → mcsd binary
+mise run deploy                # scp to Pi
+mise run deploy-hot            # stop → scp → restart
 ```
 
-Current vendors: `FabricVendor` (fetches versions from meta.fabricmc.net), `BedrockVendor` (no download URL — manual install).
+The `embed_web` build tag controls whether the Nuxt SPA is embedded in the binary. Without it, the web package is a no-op stub.
 
-**Adding a new vendor:**
-1. Create `vendors/<name>.go`, implement `Vendor` interface.
-2. Register in `vendors/vendors.go` — add to `var All`.
-3. All current vendors are Java-based. Non-Java vendor requires: `IsJava()` in `vendors.go`, branch in `core/instance.go:resolveArgv()`, executable path prompt in `cli/create.go:runCreateWizard()`.
+## Development Notes
 
----
+### Environment
 
-### `cli/`
+- **Target platform**: `linux/arm64` (Raspberry Pi)
+- **Dev host**: macOS (cross-compilation via `GOOS=linux GOARCH=arm64`)
+- **Remote**: `pi@192.168.64.11` (configurable via `.env` + `mise.toml`)
+- **Docker**: `compose.yml` runs a privileged Debian container with systemd for local testing
 
-Thin command layer. Uses Kong (struct-tagged CLI). Each command is a struct with `Run() error`. Zero business logic — delegates to `core`.
+### Conventions
 
-| File | Contents |
-|------|----------|
-| `cli.go` | `Execute()`, root `CLI` struct |
-| `create.go` | `CreateCmd`, `runCreateWizard()`, `prompt*` helpers |
-| `init.go` | `InitCmd`, `DeinitCmd` |
-| `daemon.go` | `DaemonCmd` — start/stop/status of `mcsd.service` |
-| `instance.go` | `StartCmd`/`StopCmd`/`RestartCmd`/`StatusCmd`/`ListCmd`/`DeleteCmd`/`RCONCmd`/`EnableCmd`/`DisableCmd`/`ConsoleCmd` |
-| `console.go` | `runConsole()` — tcell TUI, journalctl tail + RCON input |
-| `edit.go` | `EditCmd` — `$EDITOR` on `config.json` |
-| `systemd.go` | `SystemdCmd` (hidden) — `launch`/`stop`/`serve` called only by systemd |
+- All file writes are atomic (`.tmp` + `rename`)
+- Instance IDs are validated with regex, no path separators allowed
+- `InstanceConfig` has no lifecycle methods — pure data struct
+- `Instance` is assembled at runtime from multiple data sources
+- Error types: `ValidationError` (400), `NotFoundError` (404), `error` (500)
+- No comments in Go code unless explicitly requested
+- No optional/omitempty fields in API responses — fully declarative JSON
 
----
+### Known TODOs
 
-## Domain glossary
+- REPL-like CLI interface for instance commands (avoids retyping instance ID)
+- Bedrock vendor support (referenced but not in `vendors.All`)
+- Instance caching for D-Bus-heavy operations (noted in `instance-struct-refactor.txt`)
 
-**Instance** — a managed Minecraft server: its config, working directory, systemd unit, and memory drop-in, identified by a unique ID. Avoid: Server, container, process.
+### Testing
 
-**Instance ID** — unique alphanumeric slug (hyphens/underscores allowed, max 63 chars). Maps to systemd unit and on-disk directory.
+- `test/main.go` — standalone D-Bus unit property inspector (not a test suite)
+- No formal test suite exists; testing is manual via CLI + web UI
+- The `test/main` binary is pre-built for quick D-Bus debugging
 
-**Instance directory** — `/srv/mcsd/instances/<id>/`. All instance files live here. File browser in the web UI is scoped to this directory.
+## Git
 
-**Instance config** — `/srv/mcsd/instances/<id>/config.json`. mcsd's record of an instance (type, memory, executable, JVM args). Does not include port settings — those live in `server.properties`. Maps to `core.InstanceConfig`.
-
-**Vendor** — a pluggable server type (e.g. Fabric, Bedrock) that knows how to build a download URL and what version fields to prompt for. Implemented via the `Vendor` interface in `vendors/`.
-
-**Version fields** — the vendor-specific inputs needed to identify a server release. Some fetch options from an external API; others are free-form.
-
-**Launch** — the `syscall.Exec` step that replaces `mcsd systemd launch <id>` with the JVM or server binary. Only ever called by systemd as `ExecStart=`.
-
-**Drop-in** — a systemd override file at `/etc/systemd/system/mcsd-server@<id>.service.d/override.conf` that sets `MemoryMax=`. Written by mcsd; enforces per-instance memory limit.
-
-**Budget** — the global `memory_budget` in `/srv/mcsd/config.json`. mcsd rejects a start request if the instance's memory would exceed the budget across all running instances.
-
-**Daemon** — the `mcsd systemd serve` HTTP API process, installed as `mcsd.service`. Managed via `mcsd daemon start|stop|status`. Exposes instance lifecycle, file browsing, SSE log streaming, and vendor discovery over HTTP.
-
-**Web UI** — a Nuxt SPA embedded in the `mcsd` binary via `//go:embed`. Built from `web/`. Served by the daemon at the daemon port. Ships as part of `mcsd` — no separate install. Built with NaiveUI (dark theme) and Tailwind CSS. (ADR-0002, ADR-0004)
-
-**Daemon port** — the HTTP port the daemon listens on. Stored as `port` in `/srv/mcsd/config.json`. Defaults to `8080`. Edit the file and restart `mcsd.service` to change.
-
-**server.properties** — the Minecraft server's own configuration file. Written once by mcsd at instance creation, then owned by the user. Source of truth for game port, RCON port, and RCON password. mcsd reads from it; never overwrites after creation. (ADR-0001)
-
----
-
-## ADRs
-
-| # | Title | Short summary |
-|---|-------|---------------|
-| ADR-0001 | `server.properties` write-once | Ports live in server.properties, not config.json; mcsd never overwrites after creation |
-| ADR-0002 | Web UI bundled in binary | Nuxt SPA embedded via `//go:embed` — no separate install |
-| ADR-0003 | REST file browser over SFTP | REST API in `api/files.go` instead of SFTP daemon |
-| ADR-0004 | NaiveUI + Tailwind stack | NaiveUI for components (dark theme), Tailwind for utility styling |
-| ADR-0005 | Tabbed instance detail | Home/Files/Settings tabs from v1; Files and Settings are placeholders until v2 |
-| ADR-0006 | Host Vitals panel | Separate `HostVitals` domain above instances grid; `thresholdColor` extracted to shared util; single-host model for v1 |
-
-Full text at `docs/adr/`.
-
----
-
-## Web UI conventions
-
-- **All polling loops live in `app.vue`.** Page components and composables must not start their own `setInterval` / `useIntervalFn` / recursive-`setTimeout` poll loops. Shared reactive data (e.g. the instances list) is owned by `app.vue` and passed down via `provide`.
-
----
-
-## Agent skills
-
-### Issue tracker
-Issues live as local markdown files under `.scratch/`. See `docs/agents/issue-tracker.md`.
-
-### Triage labels
-See `docs/agents/triage-labels.md`.
-
-### Domain docs
-`/grill-with-docs` — use for planning any new API shape, storage decisions, or feature design. Will validate against this glossary and create ADRs when warranted. Single context: `AGENTS.md` (glossary section) + `docs/adr/`.
+- `.gitignore`: ignores `.env`, `mcsd` binary, `src/web/dist/**`
+- The `mcsd` binary in the repo root is the compiled output (deployed to Pi)

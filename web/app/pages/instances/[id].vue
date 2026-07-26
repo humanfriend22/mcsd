@@ -1,26 +1,29 @@
 <script setup lang="ts">
+import { InstanceKey, useInstance, loadInstance } from '~/services/api'
+
 const route = useRoute()
 const router = useRouter()
 const instanceId = route.params.id as string
 
 const activeTab = ref('overview')
-const { instance, notFound, update, refresh } = useInstance(instanceId)
+const instance = useInstance(instanceId)
+
+provide(InstanceKey, instance)
 </script>
 
 <template>
-  <div v-if="notFound" class="text-center py-12">
+  <div v-if="!instance" class="text-center py-12">
     <p class="text-neutral-400 mb-4">Instance not found.</p>
     <n-button @click="router.push('/')">Go to dashboard</n-button>
   </div>
 
   <div v-else>
-    <InstanceHeader :instance="instance" :instance-id="instanceId" class="mb-6" />
+    <InstanceHeader class="mb-6" />
 
     <n-tabs v-model:value="activeTab" type="line" animated>
 
       <n-tab-pane name="overview" tab="Overview">
-        <InstanceOverviewTab v-if="instance" :instance="instance" :instance-id="instanceId" :refresh="refresh" />
-        <n-spin v-else size="large" class="flex justify-center py-12" />
+        <InstanceOverviewTab />
       </n-tab-pane>
 
       <n-tab-pane name="files" tab="Files">
@@ -37,9 +40,7 @@ const { instance, notFound, update, refresh } = useInstance(instanceId)
       </n-tab-pane>
 
       <n-tab-pane name="settings" tab="Settings">
-        <InstanceSettingsTab v-if="instance" :instance="instance" @instance-updated="update"
-          @deleted="router.push('/')" />
-        <n-spin v-else size="large" class="flex justify-center py-12" />
+        <InstanceSettingsTab @instance-updated="(inst) => loadInstance(inst.id)" @deleted="router.push('/')" />
       </n-tab-pane>
 
     </n-tabs>

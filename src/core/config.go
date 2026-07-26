@@ -1,65 +1,37 @@
 package core
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 
-	. "mcsd/helpers"
+	. "mcsd/utils"
 )
 
 type Config struct {
 	MemoryBudget int `json:"memory_budget"`
-	Port         int `json:"port,omitempty"` // daemon HTTP port; 0 = use default 8080
-}
-
-func TotalSystemMemory() (int, error) {
-	file, err := os.Open("/proc/meminfo")
-	if err != nil {
-		return 0, err
-	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		if strings.HasPrefix(scanner.Text(), "MemTotal:") {
-			fields := strings.Fields(scanner.Text()) // ["MemTotal:", "16327584", "kB"]
-			kb, err := strconv.ParseUint(fields[1], 10, 64)
-			if err != nil {
-				return 0, err
-			}
-			return int(kb / 1024), nil // kB -> MiB
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return 0, err
-	}
-
-	return 0, fmt.Errorf("MemTotal not found in /proc/meminfo")
+	Port         int `json:"port"` // daemon HTTP port; 0 = use default 8080
 }
 
 func LoadConfig() (*Config, error) {
 	file, err := os.Open(GlobalConfigPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("config not found at %s — run 'mcsd init' to set up this host", GlobalConfigPath)
+			return nil, &NotFoundError{Message: fmt.Sprintf("config not found at %s — run 'mcsd init' to set up this host", GlobalConfigPath)}
 		}
-		return nil, fmt.Errorf("open global config: %w", err)
+		return nil, &ServerError{Message: fmt.Sprintf("open global config: %s", err.Error())}
 	}
 	defer file.Close()
 
 	var config Config
 	if err := json.NewDecoder(file).Decode(&config); err != nil {
-		return nil, fmt.Errorf("decode global config: %w", err)
+		return nil, &ServerError{Message: fmt.Sprintf("decode global config: %s", err.Error())}
 	}
 
 	total, err := TotalSystemMemory()
 	if err != nil {
-		return nil, fmt.Errorf("fetch total system memory: %w", err)
+		return nil, &ServerError{Message: fmt.Sprintf("fetch total system memory: %s", err.Error())}
 	}
 	if config.MemoryBudget > total {
 		// Cap in memory only — don't write back. Budget was set on a machine with more RAM.
@@ -71,11 +43,11 @@ func LoadConfig() (*Config, error) {
 
 func WriteConfig(config *Config) error {
 	if err := os.MkdirAll(filepath.Dir(GlobalConfigPath), 0755); err != nil {
-		return fmt.Errorf("create config dir: %w", err)
+		return &ServerError{Message: fmt.Sprintf("create config dir: %s", err.Error())}
 	}
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode config: %w", err)
+		return &ServerError{Message: fmt.Sprintf("encode config: %s", err.Error())}
 	}
 	return WriteAtomic(GlobalConfigPath, append(data, '\n'), 0644)
 }

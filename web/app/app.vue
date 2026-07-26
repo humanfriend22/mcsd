@@ -3,31 +3,17 @@ import type { Component } from 'vue'
 import { h } from 'vue'
 import { HomeOutline as HomeIcon, ServerOutline as ServersIcon, ChevronBackOutline } from '@vicons/ionicons5'
 import { NIcon, darkTheme } from 'naive-ui'
-import { useInstances, useInit } from '~/api'
-
+import { useInstances, useInit } from '~/services/api'
+import StatusDot from '~/components/StatusDot.vue'
 
 function renderIcon(icon: Component) {
   return () => h(NIcon, null, { default: () => h(icon) })
 }
 
-function renderDot(state: string) {
-  const color = state === 'active' ? '#63e2b7' : state === 'failed' ? '#f2697a' : '#525252'
-  return () => h('span', {
-    style: {
-      display: 'inline-block',
-      width: '7px',
-      height: '7px',
-      borderRadius: '50%',
-      background: color,
-      flexShrink: '0',
-    }
-  })
-}
-
 const router = useRouter()
 const route = useRoute()
 
-const { instances } = useInstances()
+const instances = useInstances()
 useInit()
 
 const menuOptions = computed(() => [
@@ -40,10 +26,10 @@ const menuOptions = computed(() => [
     label: 'Servers',
     key: 'servers',
     icon: siderCollapsed.value ? renderIcon(ChevronBackOutline) : renderIcon(ServersIcon),
-    children: instances.value.map(inst => ({
+    children: [...(instances.value ?? [])].sort((a, b) => a.name.localeCompare(b.name)).map(inst => ({
       label: inst.name,
       key: `instance-${inst.id}`,
-      icon: renderDot(inst.state),
+      icon: () => h(StatusDot, { state: inst.state }),
     })),
   },
 ])
@@ -66,19 +52,13 @@ function onSelect(key: string) {
     <n-message-provider>
       <n-layout class="h-screen" content-class="flex flex-col">
         <n-layout has-sider>
-          <n-layout-sider bordered collapse-mode="width" :collapsed-width="64" :width="240"
-            :native-scrollbar="false" show-trigger v-model:collapsed="siderCollapsed">
+          <n-layout-sider bordered collapse-mode="width" :collapsed-width="64" :width="240" :native-scrollbar="false"
+            show-trigger v-model:collapsed="siderCollapsed">
             <div class="p-6">
               <h1 class="text-lg font-bold">mcsd</h1>
             </div>
-            <n-menu
-              :collapsed-width="64"
-              :collapsed-icon-size="22"
-              :options="menuOptions"
-              :value="selectedKey"
-              v-model:expanded-keys="expandedKeys"
-              @update:value="onSelect"
-            />
+            <n-menu :collapsed-width="64" :collapsed-icon-size="22" :options="menuOptions" :value="selectedKey"
+              v-model:expanded-keys="expandedKeys" @update:value="onSelect" />
           </n-layout-sider>
           <n-layout-content content-class="w-full grow p-5">
             <NuxtPage />

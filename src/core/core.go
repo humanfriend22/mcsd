@@ -6,12 +6,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	. "mcsd/utils"
 )
 
 //go:embed services/mcsd.service
 var DaemonServiceContent string
 
-//go:embed services/mcsd-server@.service
+//go:embed services/mcsd-instance@.service
 var DaemonServiceTemplateContent string
 
 const (
@@ -19,7 +21,7 @@ const (
 	GlobalConfigPath = "/srv/mcsd/config.json"
 
 	DaemonServicePath         = "/etc/systemd/system/mcsd.service"
-	DaemonServiceTemplatePath = "/etc/systemd/system/mcsd-server@.service"
+	DaemonServiceTemplatePath = "/etc/systemd/system/mcsd-instance@.service"
 )
 
 func InstanceDir(id string) string {
@@ -28,64 +30,67 @@ func InstanceDir(id string) string {
 
 func Init(memoryBudget int) error {
 	if memoryBudget < 512 {
-		return fmt.Errorf("memory budget must be at least 512 MB, got %d", memoryBudget)
+		return &ValidationError{Message: fmt.Sprintf("memory budget must be at least 512 MB, got %d", memoryBudget)}
 	}
 
 	total, err := TotalSystemMemory()
 	if err != nil {
-		return fmt.Errorf("read system memory: %w", err)
+		return &ServerError{Message: fmt.Sprintf("read system memory: %s", err.Error())}
 	}
-	if total-memoryBudget < 1024 {
-		return fmt.Errorf("memory budget %d MB leaves less than 1 GB for system (total: %d MB)", memoryBudget, total)
+	if total-memoryBudget < 512 {
+		return &ValidationError{Message: fmt.Sprintf("memory budget %d MB leaves less than 512 MB for system (total: %d MB)", memoryBudget, total)}
 	}
 
 	if err := os.MkdirAll(DefaultBasePath, 0755); err != nil {
-		return fmt.Errorf("create instances dir: %w", err)
+		return &ServerError{Message: fmt.Sprintf("create instances dir: %s", err.Error())}
 	}
 
 	config := &Config{MemoryBudget: memoryBudget}
 	if err := WriteConfig(config); err != nil {
-		return fmt.Errorf("write config: %w", err)
+		return &ServerError{Message: fmt.Sprintf("write config: %s", err.Error())}
 	}
 
 	if err := os.WriteFile(DaemonServicePath, []byte(DaemonServiceContent), 0644); err != nil {
-		return fmt.Errorf("write daemon service: %w", err)
+		return &ServerError{Message: fmt.Sprintf("write daemon service: %s", err.Error())}
 	}
 
 	if err := os.WriteFile(DaemonServiceTemplatePath, []byte(DaemonServiceTemplateContent), 0644); err != nil {
-		return fmt.Errorf("write daemon service template: %w", err)
+		return &ServerError{Message: fmt.Sprintf("write daemon service template: %s", err.Error())}
 	}
 
 	return nil
 }
 
-func DeInit(client *SDClient) error {
+func DeInit() error {
 	if ids, _ := ListInstanceConfigs(); len(ids) > 0 {
-		return fmt.Errorf(
-			"%d instance(s) still exist: %s\nDelete them first with 'mcsd delete <id>'",
-			len(ids), strings.Join(ids, ", "),
-		)
-	}
-
-	if units, err := client.List("mcsd-server@*.service"); err == nil {
-		for _, unit := range units {
-			if unit.State == "active" {
-				_ = client.Stop(unit.Name)
-			}
-			_ = client.Disable(unit.Name)
+		return &ValidationError{
+			Message: fmt.Sprintf("%d instance(s) still exist: %s\nDelete them first with 'mcsd delete <id>'",
+				len(ids), strings.Join(ids, ", ")),
 		}
 	}
 
-	if status, err := client.Status("mcsd.service"); err == nil && status.State == "active" {
-		_ = client.Stop("mcsd.service")
+	if units, err := SDManager.List("mcsd-instance@*.service"); err == nil {
+		for _, unit := range units {
+			if unit.State == "active" {
+				_ = SDManager.Stop(UnitToID(unit.Name))
+			}
+			_ = SDManager.Disable(UnitToID(unit.Name))
+		}
 	}
-	_ = client.Disable("mcsd.service")
+
+	if status, err := SDManager.Status(""); err == nil && status.State == "active" {
+		_ = SDManager.Stop("")
+	}
+	_ = SDManager.Disable("")
 
 	_ = os.Remove(DaemonServicePath)
 	_ = os.Remove(DaemonServiceTemplatePath)
 	_ = os.RemoveAll(filepath.Dir(GlobalConfigPath))
 
-	return client.Reload()
+	if err := SDManager.Reload(); err != nil {
+		return &ServerError{Message: fmt.Sprintf("reload systemd: %s", err.Error())}
+	}
+	return nil
 }
 
 // EnsureReady verifies mcsd is fully installed and removes orphaned systemd units.
@@ -106,27 +111,22 @@ func EnsureReady() error {
 	}
 
 	if len(missing) > 0 {
-		return fmt.Errorf("mcsd not fully initialized:\n- %s", strings.Join(missing, "\n- "))
+		return &ServerError{Message: fmt.Sprintf("mcsd not fully initialized:\n- %s", strings.Join(missing, "\n- "))}
 	}
 
-	sd, err := NewSDClient()
-	if err != nil {
-		return err
-	}
-	defer sd.Close()
-	cleanOrphans(sd)
+	cleanOrphans()
 	return nil
 }
 
-func cleanOrphans(sd *SDClient) {
-	units, err := sd.List("mcsd-server@*.service")
+func cleanOrphans() {
+	units, err := SDManager.List("mcsd-instance@*.service")
 	if err != nil {
 		return
 	}
 	for _, unit := range units {
 		id := UnitToID(unit.Name)
 		if _, err := os.Stat(InstanceDir(id)); os.IsNotExist(err) {
-			_ = DeleteByID(id, sd)
+			_ = DeleteInstance(id)
 		}
 	}
 }

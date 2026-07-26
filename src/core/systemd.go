@@ -6,7 +6,10 @@ import (
 	"strings"
 	"time"
 
-	dbus "github.com/coreos/go-systemd/v22/dbus"
+	"github.com/coreos/go-systemd/v22/dbus"
+	godbus "github.com/godbus/dbus/v5"
+
+	. "mcsd/utils"
 )
 
 var bgCtx = context.Background()
@@ -18,62 +21,136 @@ type ServiceStatus struct {
 	Description string
 }
 
-type SDClient struct {
-	conn *dbus.Conn
+var SDManager *sdManager // initialized once per process by InitSDManager
+
+type sdManager struct {
+	conn   *dbus.Conn
+	rawBus *godbus.Conn
 }
 
-func NewSDClient() (*SDClient, error) {
+// InitSDManager opens the D-Bus connection to systemd.
+// Must be called once at process entry before any other core function.
+func InitSDManager() error {
 	conn, err := dbus.NewSystemdConnectionContext(bgCtx)
 	if err != nil {
-		return nil, fmt.Errorf("connect to systemd D-Bus: %w", err)
+		return &ServerError{Message: fmt.Sprintf("connect to systemd D-Bus: %s", err.Error())}
 	}
-	return &SDClient{conn: conn}, nil
-}
-
-func (client *SDClient) Close() {
-	client.conn.Close()
-}
-
-func (client *SDClient) Start(unit string) error {
-	done := make(chan string, 1)
-	_, err := client.conn.StartUnitContext(bgCtx, unit, "replace", done)
+	rawBus, err := godbus.SystemBus()
 	if err != nil {
-		return fmt.Errorf("start %s: systemd start failed: %w", unit, err)
+		conn.Close()
+		return &ServerError{Message: fmt.Sprintf("connect to system D-Bus: %s", err.Error())}
+	}
+	SDManager = &sdManager{conn: conn, rawBus: rawBus}
+	return nil
+}
+
+// ShutdownSDManager closes the D-Bus connection.
+func ShutdownSDManager() {
+	if SDManager != nil {
+		SDManager.conn.Close()
+		SDManager.rawBus.Close()
+		SDManager = nil
+	}
+}
+
+// UnitName returns the systemd unit name for an instance ID.
+// Empty ID maps to "mcsd.service".
+func UnitName(id string) string {
+	if id == "" {
+		return "mcsd.service"
+	}
+	return "mcsd-instance@" + id + ".service"
+}
+
+// UnitToID extracts the instance ID from a mcsd-instance@<id>.service unit name.
+func UnitToID(unit string) string {
+	s := strings.TrimPrefix(unit, "mcsd-instance@")
+	return strings.TrimSuffix(s, ".service")
+}
+
+// Start starts the unit for the given instance ID.
+// If id is empty, starts mcsd.service.
+func (s *sdManager) Start(id string) error {
+	done := make(chan string, 1)
+	_, err := s.conn.StartUnitContext(bgCtx, UnitName(id), "replace", done)
+	if err != nil {
+		return &ServerError{Message: fmt.Sprintf("start %s: systemd start failed: %s", id, err.Error())}
 	}
 	if result := <-done; result != "done" {
-		return fmt.Errorf("start %s: job result %s", unit, result)
+		return &ServerError{Message: fmt.Sprintf("start %s: job result %s", id, result)}
 	}
 	return nil
 }
 
-func (client *SDClient) Stop(unit string) error {
+// Stop stops the unit for the given instance ID.
+// If id is empty, stops mcsd.service.
+func (s *sdManager) Stop(id string) error {
 	done := make(chan string, 1)
-	_, err := client.conn.StopUnitContext(bgCtx, unit, "replace", done)
+	_, err := s.conn.StopUnitContext(bgCtx, UnitName(id), "replace", done)
 	if err != nil {
-		return fmt.Errorf("stop %s: systemd stop failed: %w", unit, err)
+		return &ServerError{Message: fmt.Sprintf("stop %s: systemd stop failed: %s", id, err.Error())}
 	}
 	if result := <-done; result != "done" && result != "cancelled" {
-		return fmt.Errorf("stop %s: job result %s", unit, result)
+		return &ServerError{Message: fmt.Sprintf("stop %s: job result %s", id, result)}
 	}
 	return nil
 }
 
-func (client *SDClient) Restart(unit string) error {
+// Restart restarts the unit for the given instance ID.
+// If id is empty, restarts mcsd.service.
+func (s *sdManager) Restart(id string) error {
 	done := make(chan string, 1)
-	_, err := client.conn.RestartUnitContext(bgCtx, unit, "replace", done)
+	_, err := s.conn.RestartUnitContext(bgCtx, UnitName(id), "replace", done)
 	if err != nil {
-		return fmt.Errorf("restart %s: systemd restart failed: %w", unit, err)
+		return &ServerError{Message: fmt.Sprintf("restart %s: systemd restart failed: %s", id, err.Error())}
 	}
 	if result := <-done; result != "done" {
-		return fmt.Errorf("restart %s: job result %s", unit, result)
+		return &ServerError{Message: fmt.Sprintf("restart %s: job result %s", id, result)}
 	}
 	return nil
 }
 
-func (client *SDClient) Status(unit string) (*ServiceStatus, error) {
-	statuses, err := client.conn.ListUnitsByNamesContext(bgCtx, []string{unit})
+// Enable enables the unit for the given instance ID for boot.
+// If id is empty, enables mcsd.service.
+func (s *sdManager) Enable(id string) error {
+	_, _, err := s.conn.EnableUnitFilesContext(bgCtx, []string{UnitName(id)}, false, true)
 	if err != nil {
-		return nil, fmt.Errorf("status %s: systemd status failed: %w", unit, err)
+		return &ServerError{Message: fmt.Sprintf("enable %s: systemd enable failed: %s", id, err.Error())}
+	}
+	return nil
+}
+
+// Disable disables the unit for the given instance ID from boot.
+// If id is empty, disables mcsd.service.
+func (s *sdManager) Disable(id string) error {
+	_, err := s.conn.DisableUnitFilesContext(bgCtx, []string{UnitName(id)}, false)
+	if err != nil {
+		return &ServerError{Message: fmt.Sprintf("disable %s: systemd disable failed: %s", id, err.Error())}
+	}
+	return nil
+}
+
+// ResetFailed clears the failed state of the unit for the given instance ID.
+// If id is empty, resets mcsd.service.
+func (s *sdManager) ResetFailed(id string) error {
+	return s.conn.ResetFailedUnitContext(bgCtx, UnitName(id))
+}
+
+// Reload reloads the systemd manager configuration.
+func (s *sdManager) Reload() error {
+	if err := s.conn.ReloadContext(bgCtx); err != nil {
+		return &ServerError{Message: fmt.Sprintf("reload systemd: %s", err.Error())}
+	}
+	return nil
+}
+
+// Status returns the current service status for the given instance ID.
+// If id is empty, returns status of mcsd.service.
+func (s *sdManager) Status(id string) (*ServiceStatus, error) {
+	unit := UnitName(id)
+	statuses, err := s.conn.ListUnitsByNamesContext(bgCtx, []string{unit})
+	if err != nil {
+		return nil, &ServerError{Message: fmt.Sprintf("status %s: systemd status failed: %s", id, err.Error())}
 	}
 	if len(statuses) == 0 {
 		return &ServiceStatus{Name: unit, State: "inactive", SubState: "dead"}, nil
@@ -87,52 +164,51 @@ func (client *SDClient) Status(unit string) (*ServiceStatus, error) {
 	}, nil
 }
 
-func (client *SDClient) List(pattern string) ([]*ServiceStatus, error) {
-	units, err := client.conn.ListUnitsByPatternsContext(bgCtx, nil, []string{pattern})
+// IsEnabled returns whether the unit for the given instance ID is enabled at boot.
+// If id is empty, checks mcsd.service.
+// Calls GetUnitFileState via raw D-Bus, which works for template instances unlike
+// ListUnitFilesByPatterns.
+func (s *sdManager) IsEnabled(id string) bool {
+	unit := UnitName(id)
+	var state string
+	obj := s.rawBus.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
+	err := obj.Call("org.freedesktop.systemd1.Manager.GetUnitFileState", 0, unit).Store(&state)
 	if err != nil {
-		return nil, fmt.Errorf("list %s: systemd list failed: %w", pattern, err)
+		return false
 	}
-	statuses := make([]*ServiceStatus, 0, len(units))
-	for _, unit := range units {
-		statuses = append(statuses, &ServiceStatus{
-			Name:        unit.Name,
-			State:       unit.ActiveState,
-			SubState:    unit.SubState,
-			Description: unit.Description,
-		})
-	}
-	return statuses, nil
+	return state == "enabled"
 }
 
-func (client *SDClient) Reload() error {
-	if err := client.conn.ReloadContext(bgCtx); err != nil {
-		return fmt.Errorf("reload systemd: %w", err)
-	}
-	return nil
-}
+// ActiveStats returns the active-enter timestamp and memory usage (MB) for the given unit.
+func (s *sdManager) ActiveStats(id string) (activeSince time.Time, memoryMB int, err error) {
+	unitName := UnitName(id)
 
-func (client *SDClient) Enable(unit string) error {
-	_, _, err := client.conn.EnableUnitFilesContext(bgCtx, []string{unit}, false, true)
+	// Unit-level properties
+	props, err := s.conn.GetUnitPropertiesContext(bgCtx, unitName)
 	if err != nil {
-		return fmt.Errorf("enable %s: systemd enable failed: %w", unit, err)
+		return time.Time{}, 0, &ServerError{Message: fmt.Sprintf("active stats %s: unit properties failed: %s", id, err.Error())}
 	}
-	return nil
-}
+	if ts, ok := props["ActiveEnterTimestamp"].(uint64); ok && ts > 0 {
+		activeSince = time.UnixMicro(int64(ts))
+	}
 
-func (client *SDClient) Disable(unit string) error {
-	_, err := client.conn.DisableUnitFilesContext(bgCtx, []string{unit}, false)
-	if err != nil {
-		return fmt.Errorf("disable %s: systemd disable failed: %w", unit, err)
+	// Service-level properties (MemoryCurrent lives on org.freedesktop.systemd1.Service)
+	svcProps, err := s.conn.GetUnitTypePropertiesContext(bgCtx, unitName, "Service")
+	if err == nil {
+		if v, ok := svcProps["MemoryCurrent"].(uint64); ok && v != ^uint64(0) {
+			memoryMB = int(v / (1024 * 1024))
+		}
 	}
-	return nil
+
+	return activeSince, memoryMB, nil
 }
 
 // ActiveSince returns when the unit last entered the active state.
 // Returns zero time if the unit is not currently active.
-func (client *SDClient) ActiveSince(unit string) (time.Time, error) {
-	props, err := client.conn.GetUnitPropertiesContext(bgCtx, unit)
+func (s *sdManager) ActiveSince(id string) (time.Time, error) {
+	props, err := s.conn.GetUnitPropertiesContext(bgCtx, UnitName(id))
 	if err != nil {
-		return time.Time{}, fmt.Errorf("active since %s: systemd properties failed: %w", unit, err)
+		return time.Time{}, &ServerError{Message: fmt.Sprintf("active since %s: systemd properties failed: %s", id, err.Error())}
 	}
 	timestamp, ok := props["ActiveEnterTimestamp"]
 	if !ok {
@@ -145,37 +221,20 @@ func (client *SDClient) ActiveSince(unit string) (time.Time, error) {
 	return time.UnixMicro(int64(microseconds)), nil
 }
 
-func (client *SDClient) MemoryUsedBytes(unit string) (uint64, error) {
-	props, err := client.conn.GetUnitPropertiesContext(bgCtx, unit)
+// List returns all units matching the given glob pattern.
+func (s *sdManager) List(pattern string) ([]*ServiceStatus, error) {
+	units, err := s.conn.ListUnitsByPatternsContext(bgCtx, nil, []string{pattern})
 	if err != nil {
-		return 0, fmt.Errorf("memory used %s: systemd properties failed: %w", unit, err)
+		return nil, &ServerError{Message: fmt.Sprintf("list %s: systemd list failed: %s", pattern, err.Error())}
 	}
-	v, ok := props["MemoryCurrent"]
-	if !ok {
-		return 0, nil
+	statuses := make([]*ServiceStatus, 0, len(units))
+	for _, unit := range units {
+		statuses = append(statuses, &ServiceStatus{
+			Name:        unit.Name,
+			State:       unit.ActiveState,
+			SubState:    unit.SubState,
+			Description: unit.Description,
+		})
 	}
-	bytes, ok := v.(uint64)
-	if !ok || bytes == ^uint64(0) {
-		return 0, nil
-	}
-	return bytes, nil
-}
-
-func (client *SDClient) IsEnabled(unit string) bool {
-	files, err := client.conn.ListUnitFilesByPatternsContext(bgCtx, []string{"enabled"}, []string{unit})
-	if err != nil {
-		return false
-	}
-	return len(files) > 0
-}
-
-// UnitName returns the systemd unit name for an instance ID.
-func UnitName(id string) string {
-	return "mcsd-server@" + id + ".service"
-}
-
-// UnitToID extracts the instance ID from a mcsd-server@<id>.service unit name.
-func UnitToID(unit string) string {
-	s := strings.TrimPrefix(unit, "mcsd-server@")
-	return strings.TrimSuffix(s, ".service")
+	return statuses, nil
 }

@@ -7,6 +7,8 @@ StartLimitIntervalSec=60
 
 [Service]
 Type=simple
+MemoryAccounting=yes
+LogNamespace=mcsd-%i
 WorkingDirectory=/srv/mcsd/instances/%i
 
 Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -15,7 +17,7 @@ ExecStart=/usr/local/bin/mcsd systemd launch %i
 ExecStop=/usr/local/bin/mcsd systemd stop %i
 
 SuccessExitStatus=143 130
-Restart=on-failure
+Restart=no
 TimeoutStopSec=120
 SendSIGKILL=yes
 

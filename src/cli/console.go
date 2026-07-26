@@ -18,13 +18,8 @@ type logLineEvent struct {
 
 func (e *logLineEvent) When() time.Time { return e.when }
 
-func runConsole(instance *core.InstanceConfig) error {
-	ports, err := instance.ReadPorts()
-	if err != nil {
-		return fmt.Errorf("read server.properties: %w", err)
-	}
-
-	rconClient, _ := core.DialRCON(fmt.Sprintf("127.0.0.1:%d", ports.RCON), ports.RCONPassword)
+func runConsole(instance *core.Instance) error {
+	rconClient, _ := core.DialRCON(fmt.Sprintf("127.0.0.1:%d", instance.Ports.RCON), instance.Ports.RCONPassword)
 	if rconClient != nil {
 		defer rconClient.Close()
 	}
@@ -89,13 +84,8 @@ func runConsole(instance *core.InstanceConfig) error {
 	unit := core.UnitName(instance.ID)
 
 	jctlArgs := []string{"-u", unit, "-f", "--output=cat", "--no-pager"}
-	if sdClient, err := core.NewSDClient(); err == nil {
-		if since, err := sdClient.ActiveSince(unit); err == nil && !since.IsZero() {
-			jctlArgs = append(jctlArgs, "--since", since.Format("2006-01-02 15:04:05"))
-		} else {
-			jctlArgs = append(jctlArgs, "-n", "50")
-		}
-		sdClient.Close()
+	if since, err := core.SDManager.ActiveSince(instance.ID); err == nil && !since.IsZero() {
+		jctlArgs = append(jctlArgs, "--since", since.Format("2006-01-02 15:04:05"))
 	} else {
 		jctlArgs = append(jctlArgs, "-n", "50")
 	}

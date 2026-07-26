@@ -1,10 +1,22 @@
-// Single source of truth for supported server vendors
 package vendors
+
+import (
+	"fmt"
+
+	. "mcsd/utils"
+)
+
+type Build struct {
+	Number  int    `json:"number"`
+	Channel string `json:"channel"`
+	Time    string `json:"time"`
+}
 
 type Vendor interface {
 	Name() string
 	Versions() ([]string, error)
-	DownloadURL(version string) (string, error)
+	Builds(version string) ([]Build, error)
+	DownloadURL(version string, build int) (string, error)
 }
 
 var names []string
@@ -27,9 +39,16 @@ func Get(name string) Vendor {
 	return nil
 }
 
-// Checks if a vendor is valid by name
 func IsValid(name string) bool {
 	return Get(name) != nil
+}
+
+func Require(name string) (Vendor, error) {
+	v := Get(name)
+	if v == nil {
+		return nil, &ValidationError{Message: fmt.Sprintf("unknown vendor %q", name)}
+	}
+	return v, nil
 }
 
 func Executable(id string) string {
@@ -40,7 +59,7 @@ func Executable(id string) string {
 	}
 }
 
-// Add new vendors here
 var All = []Vendor{
 	FabricVendor{},
+	PaperVendor{},
 }

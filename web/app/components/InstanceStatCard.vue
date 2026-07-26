@@ -12,12 +12,12 @@ defineProps<{
 </script>
 
 <template>
-  <n-card size="small" :bordered="true">
+  <n-card size="small" :bordered="true" content-class="flex flex-col h-full">
     <div class="flex items-center gap-1.5 text-xs text-neutral-400 mb-2">
       <NIcon :component="icon" :size="13" />
       {{ label }}
     </div>
-    <div class="text-sm font-medium text-neutral-100">
+    <div class="flex-1 flex flex-col justify-end text-sm font-medium text-neutral-100">
       <slot>{{ value }}</slot>
     </div>
     <n-progress

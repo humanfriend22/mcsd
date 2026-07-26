@@ -10,7 +10,11 @@ func (FabricVendor) Versions() ([]string, error) {
 	return fabricStableVersions("https://meta.fabricmc.net/v2/versions/game/intermediary")
 }
 
-func (FabricVendor) DownloadURL(version string) (string, error) {
+func (FabricVendor) Builds(version string) ([]Build, error) {
+	return nil, nil
+}
+
+func (FabricVendor) DownloadURL(version string, build int) (string, error) {
 	loader, err := fabricLatestStable("https://meta.fabricmc.net/v2/versions/loader")
 	if err != nil {
 		return "", fmt.Errorf("fetch loader version: %w", err)

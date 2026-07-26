@@ -1,0 +1,1 @@
+A Go project for just researching library behavior and similar stuff.

@@ -2,12 +2,12 @@
 import { NIcon, NTag } from 'naive-ui'
 import { TimeOutline, HardwareChipOutline } from '@vicons/ionicons5'
 import { formatUptime, formatMemoryMB } from '~/utils/format'
-import type { Instance } from '~/api'
+import { useCurrentInstance } from '~/services/api'
 
-const props = defineProps<{ instance: Instance | null; instanceId: string }>()
+const instance = useCurrentInstance();
 
 const statusType = computed(() => {
-  switch (props.instance?.state) {
+  switch (instance.value.state) {
     case 'active': return 'success'
     case 'failed': return 'error'
     case 'activating':
@@ -17,31 +17,25 @@ const statusType = computed(() => {
 })
 
 const statusLabel = computed(() => {
-  switch (props.instance?.state) {
+  switch (instance.value.state) {
     case 'activating': return 'starting'
     case 'deactivating': return 'stopping'
-    default: return props.instance?.state ?? '—'
+    default: return instance.value.state
   }
 })
 
-const isRunning = computed(() => props.instance?.state === 'active')
+const isRunning = computed(() => instance.value.state === 'active')
 </script>
 
 <template>
   <div class="flex flex-wrap items-center gap-3">
-    <h1 class="text-xl font-bold">{{ instance?.name ?? instanceId }}</h1>
-    <NTag v-if="instance" :type="statusType" size="small">{{ statusLabel }}</NTag>
-    <span
-      v-if="instance?.uptime_seconds && isRunning"
-      class="inline-flex items-center gap-1 text-xs text-neutral-500"
-    >
+    <h1 class="text-xl font-bold">{{ instance.name }}</h1>
+    <NTag :type="statusType" size="small">{{ statusLabel }}</NTag>
+    <span v-if="instance.uptime_seconds && isRunning" class="inline-flex items-center gap-1 text-xs text-neutral-500">
       <NIcon :component="TimeOutline" :size="13" />
       {{ formatUptime(instance.uptime_seconds) }}
     </span>
-    <span
-      v-if="instance && isRunning"
-      class="inline-flex items-center gap-1 text-xs text-neutral-500"
-    >
+    <span v-if="isRunning" class="inline-flex items-center gap-1 text-xs text-neutral-500">
       <NIcon :component="HardwareChipOutline" :size="13" />
       {{
         instance.memory_used

@@ -9,77 +9,57 @@ import (
 	"text/tabwriter"
 
 	"mcsd/core"
-	"mcsd/helpers"
+	"mcsd/utils"
 )
 
 type StartCmd struct {
-	ID string `arg:"" help:"InstanceConfig ID"`
+	ID string `arg:"" help:"Instance ID"`
 }
 
 func (c *StartCmd) Run() error {
-	instance, err := loadInstance(c.ID)
+	inst, err := loadInstance(c.ID)
 	if err != nil {
 		return err
 	}
-	sdClient, err := core.NewSDClient()
-	if err != nil {
-		return err
-	}
-	defer sdClient.Close()
-	return instance.Start(sdClient)
+	return inst.Start()
 }
 
 type StopCmd struct {
-	ID string `arg:"" help:"InstanceConfig ID"`
+	ID string `arg:"" help:"Instance ID"`
 }
 
 func (c *StopCmd) Run() error {
-	instance, err := loadInstance(c.ID)
+	inst, err := loadInstance(c.ID)
 	if err != nil {
 		return err
 	}
-	sdClient, err := core.NewSDClient()
-	if err != nil {
-		return err
-	}
-	defer sdClient.Close()
-	return instance.Stop(sdClient)
+	return inst.Stop()
 }
 
 type RestartCmd struct {
-	ID string `arg:"" help:"InstanceConfig ID"`
+	ID string `arg:"" help:"Instance ID"`
 }
 
 func (c *RestartCmd) Run() error {
-	instance, err := loadInstance(c.ID)
+	inst, err := loadInstance(c.ID)
 	if err != nil {
 		return err
 	}
-	sdClient, err := core.NewSDClient()
-	if err != nil {
-		return err
-	}
-	defer sdClient.Close()
-	return instance.Restart(sdClient)
+	return inst.Restart()
 }
 
 type StatusCmd struct {
-	ID string `arg:"" optional:"" help:"InstanceConfig ID; shows all if omitted"`
+	ID string `arg:"" optional:"" help:"Instance ID; shows all if omitted"`
 }
 
 func (c *StatusCmd) Run() error {
 	if c.ID != "" {
-		if err := helpers.ValidateID(c.ID); err != nil {
+		if err := utils.ValidateID(c.ID); err != nil {
 			return err
 		}
 		return proxySystemctl(core.UnitName(c.ID))
 	}
-	sdClient, err := core.NewSDClient()
-	if err != nil {
-		return err
-	}
-	units, err := sdClient.List("mcsd-server@*.service")
-	sdClient.Close()
+	units, err := core.SDManager.List("mcsd-instance@*.service")
 	if err != nil {
 		return err
 	}
@@ -114,15 +94,10 @@ func (c *ListCmd) Run() error {
 		fmt.Println("No servers found.")
 		return nil
 	}
-	sdClient, err := core.NewSDClient()
-	if err != nil {
-		return err
-	}
-	defer sdClient.Close()
 	writer := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(writer, "ID\tSTATUS")
 	for _, id := range ids {
-		status, err := sdClient.Status(core.UnitName(id))
+		status, err := core.SDManager.Status(id)
 		if err != nil {
 			return err
 		}
@@ -147,50 +122,43 @@ func friendlyState(state string) string {
 }
 
 type DeleteCmd struct {
-	ID    string `arg:"" help:"InstanceConfig ID"`
+	ID    string `arg:"" help:"Instance ID"`
 	Force bool   `short:"f" help:"Skip confirmation"`
 }
 
 func (c *DeleteCmd) Run() error {
-	sdClient, err := core.NewSDClient()
-	if err != nil {
-		return err
-	}
-	defer sdClient.Close()
-
-	instance, err := loadInstance(c.ID)
+	inst, err := loadInstance(c.ID)
 	if err != nil {
 		// Config missing — check for an orphaned systemd unit before giving up.
-		unit := core.UnitName(c.ID)
-		if _, statusErr := sdClient.Status(unit); statusErr != nil {
+		if _, statusErr := core.SDManager.Status(c.ID); statusErr != nil {
 			return err // nothing in systemd either; report original error
 		}
-		return core.DeleteByID(c.ID, sdClient)
+		return core.DeleteInstance(c.ID)
 	}
 
 	if !c.Force {
-		fmt.Printf("Delete %q and all its data? [Y/n] ", instance.Name)
+		fmt.Printf("Delete %q and all its data? [y/N] ", inst.Name)
 		var response string
 		fmt.Scanln(&response)
-		if response == "n" || response == "N" {
+		if response != "y" && response != "Y" {
 			fmt.Println("Aborted.")
 			return nil
 		}
 	}
-	return instance.Delete(sdClient)
+	return core.DeleteInstance(inst.ID)
 }
 
 type RCONCmd struct {
-	ID      string   `arg:"" help:"InstanceConfig ID"`
+	ID      string   `arg:"" help:"Instance ID"`
 	Command []string `arg:"" help:"RCON command"`
 }
 
 func (c *RCONCmd) Run() error {
-	instance, err := loadInstance(c.ID)
+	inst, err := loadInstance(c.ID)
 	if err != nil {
 		return err
 	}
-	response, err := instance.RCON(strings.Join(c.Command, " "))
+	response, err := inst.RCON(strings.Join(c.Command, " "))
 	if err != nil {
 		return err
 	}
@@ -199,20 +167,15 @@ func (c *RCONCmd) Run() error {
 }
 
 type EnableCmd struct {
-	ID string `arg:"" help:"InstanceConfig ID"`
+	ID string `arg:"" help:"Instance ID"`
 }
 
 func (c *EnableCmd) Run() error {
-	instance, err := loadInstance(c.ID)
+	inst, err := loadInstance(c.ID)
 	if err != nil {
 		return err
 	}
-	sdClient, err := core.NewSDClient()
-	if err != nil {
-		return err
-	}
-	defer sdClient.Close()
-	if err := instance.Enable(sdClient); err != nil {
+	if err := inst.Enable(); err != nil {
 		return err
 	}
 	fmt.Printf("Enabled %s — will start on boot.\n", c.ID)
@@ -220,20 +183,15 @@ func (c *EnableCmd) Run() error {
 }
 
 type DisableCmd struct {
-	ID string `arg:"" help:"InstanceConfig ID"`
+	ID string `arg:"" help:"Instance ID"`
 }
 
 func (c *DisableCmd) Run() error {
-	instance, err := loadInstance(c.ID)
+	inst, err := loadInstance(c.ID)
 	if err != nil {
 		return err
 	}
-	sdClient, err := core.NewSDClient()
-	if err != nil {
-		return err
-	}
-	defer sdClient.Close()
-	if err := instance.Disable(sdClient); err != nil {
+	if err := inst.Disable(); err != nil {
 		return err
 	}
 	fmt.Printf("Disabled %s — will not start on boot.\n", c.ID)
@@ -241,20 +199,20 @@ func (c *DisableCmd) Run() error {
 }
 
 type ConsoleCmd struct {
-	ID string `arg:"" help:"InstanceConfig ID"`
+	ID string `arg:"" help:"Instance ID"`
 }
 
 func (c *ConsoleCmd) Run() error {
-	instance, err := loadInstance(c.ID)
+	inst, err := loadInstance(c.ID)
 	if err != nil {
 		return err
 	}
-	return runConsole(instance)
+	return runConsole(inst)
 }
 
-func loadInstance(id string) (*core.InstanceConfig, error) {
-	if err := helpers.ValidateID(id); err != nil {
+func loadInstance(id string) (*core.Instance, error) {
+	if err := utils.ValidateID(id); err != nil {
 		return nil, err
 	}
-	return core.LoadInstanceConfig(id)
+	return core.LoadInstance(id)
 }
