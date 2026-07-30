@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -86,22 +87,30 @@ func proxySystemctl(units ...string) error {
 type ListCmd struct{}
 
 func (c *ListCmd) Run() error {
-	ids, err := core.ListInstanceConfigs()
+	instances, err := core.ListInstances()
 	if err != nil {
 		return err
 	}
-	if len(ids) == 0 {
+	if len(instances) == 0 {
 		fmt.Println("No servers found.")
 		return nil
 	}
-	writer := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	return writeInstanceTable(os.Stdout, instances)
+}
+
+// writeInstanceTable renders the ID/STATUS table for ListCmd. It writes to
+// the given io.Writer rather than os.Stdout directly so the output format is
+// testable. A degraded instance (State == core.InstanceStateError) gets an
+// additional indented line carrying its load-failure message immediately
+// after its row; the line is omitted entirely when the message is empty.
+func writeInstanceTable(w io.Writer, instances []*core.Instance) error {
+	writer := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(writer, "ID\tSTATUS")
-	for _, id := range ids {
-		status, err := core.SDManager.Status(id)
-		if err != nil {
-			return err
+	for _, inst := range instances {
+		fmt.Fprintf(writer, "%s\t%s\n", inst.ID, friendlyState(inst.State))
+		if inst.State == core.InstanceStateError && inst.Error != "" {
+			fmt.Fprintf(writer, "  %s\t\n", inst.Error)
 		}
-		fmt.Fprintf(writer, "%s\t%s\n", id, friendlyState(status.State))
 	}
 	return writer.Flush()
 }
