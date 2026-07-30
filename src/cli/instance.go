@@ -138,23 +138,50 @@ type DeleteCmd struct {
 func (c *DeleteCmd) Run() error {
 	inst, err := loadInstance(c.ID)
 	if err != nil {
-		// Config missing — check for an orphaned systemd unit before giving up.
-		if _, statusErr := core.SDManager.Status(c.ID); statusErr != nil {
-			return err // nothing in systemd either; report original error
+		// The instance could not be loaded — its config.json or
+		// server.properties may be corrupt, or it may not exist at all.
+		// Check whether there is anything worth deleting (an on-disk
+		// directory or a known systemd unit) before giving up: a
+		// corrupt-but-present instance must still be removable (D-04/D-06),
+		// and delete is the operator's only remedy once every other
+		// lifecycle verb refuses to run against it.
+		_, statErr := os.Stat(core.InstanceDir(c.ID))
+		dirExists := statErr == nil
+		_, statusErr := core.SDManager.Status(c.ID)
+		unitKnown := statusErr == nil
+		if !dirExists && !unitKnown {
+			return err // nothing here either; report the original load error unchanged
+		}
+		// No inst.Name is available since the config could not be read —
+		// identify the instance by its id and say plainly it failed to load.
+		if !confirmDelete(fmt.Sprintf("%s (could not be loaded)", c.ID), c.Force) {
+			return nil
 		}
 		return core.DeleteInstance(c.ID)
 	}
 
-	if !c.Force {
-		fmt.Printf("Delete %q and all its data? [y/N] ", inst.Name)
-		var response string
-		fmt.Scanln(&response)
-		if response != "y" && response != "Y" {
-			fmt.Println("Aborted.")
-			return nil
-		}
+	if !confirmDelete(inst.Name, c.Force) {
+		return nil
 	}
 	return core.DeleteInstance(inst.ID)
+}
+
+// confirmDelete prompts the operator to confirm destroying label's data,
+// unless force is set, reusing the accept-on-y-or-Y / "Aborted." semantics
+// shared by both DeleteCmd.Run branches. It returns true when the delete
+// should proceed.
+func confirmDelete(label string, force bool) bool {
+	if force {
+		return true
+	}
+	fmt.Printf("Delete %q and all its data? [y/N] ", label)
+	var response string
+	fmt.Scanln(&response)
+	if response != "y" && response != "Y" {
+		fmt.Println("Aborted.")
+		return false
+	}
+	return true
 }
 
 type RCONCmd struct {
