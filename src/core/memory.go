@@ -106,14 +106,14 @@ func CheckMemoryBudget(excludeID string, requestedMemory int) error {
 func CheckEnableBudget(id string, memory int) error {
 	config, err := LoadConfig()
 	if err != nil {
-		return nil
+		return &ServerError{Message: fmt.Sprintf("load config: %s", err.Error())}
 	}
 	if config.MemoryBudget <= 0 {
 		return nil
 	}
 	enabled, err := TotalEnabledMemory(id)
 	if err != nil {
-		return nil
+		return err
 	}
 	if enabled+memory > config.MemoryBudget {
 		return &ValidationError{
