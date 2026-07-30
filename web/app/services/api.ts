@@ -12,7 +12,7 @@ function getRequestPrefix(): string {
     return requestPrefix
 }
 
-export type InstanceState = 'active' | 'inactive' | 'activating' | 'deactivating' | 'failed'
+export type InstanceState = 'active' | 'inactive' | 'activating' | 'deactivating' | 'failed' | 'error'
 export interface Instance {
     id: string
     name: string
@@ -29,6 +29,8 @@ export interface Instance {
         rcon_password: string
     }
     state: InstanceState
+    // Populated only when state is 'error' — the backend's load-failure message.
+    error?: string
     enabled: boolean
     active_since: string | null
     memory_used: number
