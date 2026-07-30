@@ -1,8 +1,11 @@
 package core
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"os"
+	"sync"
 	"time"
 
 	"mcsd/vendors"
@@ -10,15 +13,22 @@ import (
 	. "mcsd/utils"
 )
 
+// InstanceStateError marks a degraded Instance entry whose config or ports
+// could not be loaded. It is deliberately distinct from systemd's own
+// "failed" state so a consumer can tell "config unreadable" apart from
+// "process crashed".
+const InstanceStateError = "error"
+
 // Instance is the master struct representing everything about a Minecraft server instance.
 // It composes the persisted config, the server.properties ports, and the live systemd state.
 type Instance struct {
 	*InstanceConfig            // config.json fields (flattened via embedding)
-	Ports           Ports      `json:"ports"`        // from server.properties
-	State           string     `json:"state"`        // from systemd: "active", "inactive", "failed", etc.
-	Enabled         bool       `json:"enabled"`      // from systemd
-	ActiveSince     *time.Time `json:"active_since"` // from D-Bus ActiveEnterTimestamp; nil if never active
-	MemoryUsed      int        `json:"memory_used"`  // from D-Bus MemoryCurrent (MB)
+	Ports           Ports      `json:"ports"`           // from server.properties
+	State           string     `json:"state"`           // from systemd: "active", "inactive", "failed", etc., or InstanceStateError
+	Enabled         bool       `json:"enabled"`         // from systemd
+	ActiveSince     *time.Time `json:"active_since"`    // from D-Bus ActiveEnterTimestamp; nil if never active
+	MemoryUsed      int        `json:"memory_used"`     // from D-Bus MemoryCurrent (MB)
+	Error           string     `json:"error,omitempty"` // load-failure message; only populated when State == InstanceStateError
 }
 
 // LoadInstance builds a fully-populated Instance from config.json, server.properties, and systemd.
@@ -30,7 +40,12 @@ func LoadInstance(id string) (*Instance, error) {
 
 	ports, err := ReadPorts(InstanceDir(id))
 	if err != nil {
-		ports = Ports{} // server.properties may not exist yet
+		var notFound *NotFoundError
+		if errors.As(err, &notFound) {
+			ports = Ports{} // server.properties may not exist yet — new instance
+		} else {
+			return nil, err // real error (e.g. bad port value) — propagate
+		}
 	}
 
 	state := "inactive"
@@ -63,21 +78,76 @@ func LoadInstance(id string) (*Instance, error) {
 	}, nil
 }
 
-// ListInstances returns all instances with fully-populated data.
+// newErrorInstance builds a degraded Instance entry for an id whose config or
+// ports could not be loaded. The embedded InstanceConfig is never nil: every
+// consumer of ListInstances (e.g. src/api/cache.go's closeStaleRCON) reads
+// inst.ID unconditionally. No config value is fabricated — only the id and
+// the error message are populated.
+func newErrorInstance(id string, err error) *Instance {
+	return &Instance{
+		InstanceConfig: &InstanceConfig{ID: id, Name: id},
+		State:          InstanceStateError,
+		Error:          err.Error(),
+	}
+}
+
+var (
+	loadFailureMu   sync.Mutex
+	lastLoadFailure = map[string]string{}
+)
+
+// logInstanceLoadFailure records a per-instance load failure, deduped so an
+// unchanged repeated failure is logged once rather than once per
+// ListInstances call (src/api/cache.go polls every 2 seconds).
+func logInstanceLoadFailure(id string, err error) {
+	msg := err.Error()
+
+	loadFailureMu.Lock()
+	defer loadFailureMu.Unlock()
+
+	if lastLoadFailure[id] == msg {
+		return
+	}
+	lastLoadFailure[id] = msg
+	log.Printf("instance %q failed to load: %s", id, msg)
+}
+
+// clearInstanceLoadFailure drops the dedupe entry for id so a recurrence
+// after a repair is logged again.
+func clearInstanceLoadFailure(id string) {
+	loadFailureMu.Lock()
+	defer loadFailureMu.Unlock()
+	delete(lastLoadFailure, id)
+}
+
+// buildInstanceList walks ids in order and appends exactly one entry per id:
+// the loaded instance on success, or a degraded newErrorInstance on failure.
+// Taking the loader as a parameter is the seam that makes this testable
+// without the compile-time DefaultBasePath.
+func buildInstanceList(ids []string, load func(string) (*Instance, error)) []*Instance {
+	instances := make([]*Instance, 0, len(ids))
+	for _, id := range ids {
+		inst, err := load(id)
+		if err != nil {
+			logInstanceLoadFailure(id, err)
+			instances = append(instances, newErrorInstance(id, err))
+			continue
+		}
+		clearInstanceLoadFailure(id)
+		instances = append(instances, inst)
+	}
+	return instances
+}
+
+// ListInstances returns all instances with fully-populated data. A
+// per-instance load failure degrades that entry rather than shortening
+// the list or failing the whole call (D-01).
 func ListInstances() ([]*Instance, error) {
 	ids, err := ListInstanceConfigs()
 	if err != nil {
 		return nil, err
 	}
-	instances := []*Instance{}
-	for _, id := range ids {
-		inst, err := LoadInstance(id)
-		if err != nil {
-			continue
-		}
-		instances = append(instances, inst)
-	}
-	return instances, nil
+	return buildInstanceList(ids, LoadInstance), nil
 }
 
 // Validate checks the instance config, ports, and memory budget for correctness.

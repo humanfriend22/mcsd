@@ -35,6 +35,9 @@ func (p Ports) Validate() error {
 func ReadPorts(dir string) (Ports, error) {
 	file, err := os.Open(filepath.Join(dir, "server.properties"))
 	if err != nil {
+		if os.IsNotExist(err) {
+			return Ports{}, &NotFoundError{Message: fmt.Sprintf("server.properties not found in %q", dir)}
+		}
 		return Ports{}, &ServerError{Message: fmt.Sprintf("open server.properties: %s", err.Error())}
 	}
 	defer file.Close()
@@ -57,10 +60,18 @@ func ReadPorts(dir string) (Ports, error) {
 
 	var ports Ports
 	if value, ok := props["server-port"]; ok {
-		ports.Game, _ = strconv.Atoi(value)
+		game, err := strconv.Atoi(value)
+		if err != nil {
+			return Ports{}, &ValidationError{Message: fmt.Sprintf("invalid server-port %q in server.properties: %s", value, err.Error())}
+		}
+		ports.Game = game
 	}
 	if value, ok := props["rcon.port"]; ok {
-		ports.RCON, _ = strconv.Atoi(value)
+		rcon, err := strconv.Atoi(value)
+		if err != nil {
+			return Ports{}, &ValidationError{Message: fmt.Sprintf("invalid rcon.port %q in server.properties: %s", value, err.Error())}
+		}
+		ports.RCON = rcon
 	}
 	ports.RCONPassword = props["rcon.password"]
 	return ports, nil
