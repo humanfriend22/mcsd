@@ -13,12 +13,12 @@ import (
 // Instance is the master struct representing everything about a Minecraft server instance.
 // It composes the persisted config, the server.properties ports, and the live systemd state.
 type Instance struct {
-	*InstanceConfig                    // config.json fields (flattened via embedding)
-	Ports         Ports  `json:"ports"`           // from server.properties
-	State         string `json:"state"`           // from systemd: "active", "inactive", "failed", etc.
-	Enabled       bool   `json:"enabled"`         // from systemd
-	UptimeSeconds int    `json:"uptime_seconds"`  // computed from ActiveEnterTimestamp
-	MemoryUsed    int    `json:"memory_used"`     // from D-Bus MemoryCurrent (MB)
+	*InstanceConfig            // config.json fields (flattened via embedding)
+	Ports           Ports      `json:"ports"`        // from server.properties
+	State           string     `json:"state"`        // from systemd: "active", "inactive", "failed", etc.
+	Enabled         bool       `json:"enabled"`      // from systemd
+	ActiveSince     *time.Time `json:"active_since"` // from D-Bus ActiveEnterTimestamp; nil if never active
+	MemoryUsed      int        `json:"memory_used"`  // from D-Bus MemoryCurrent (MB)
 }
 
 // LoadInstance builds a fully-populated Instance from config.json, server.properties, and systemd.
@@ -35,7 +35,7 @@ func LoadInstance(id string) (*Instance, error) {
 
 	state := "inactive"
 	var enabled bool
-	var uptimeSeconds int
+	var activeSince *time.Time
 	var memoryUsed int
 
 	if SDManager != nil {
@@ -47,7 +47,7 @@ func LoadInstance(id string) (*Instance, error) {
 
 		if since, memMB, err := SDManager.ActiveStats(id); err == nil {
 			if !since.IsZero() {
-				uptimeSeconds = int(time.Since(since).Seconds())
+				activeSince = &since
 			}
 			memoryUsed = memMB
 		}
@@ -58,7 +58,7 @@ func LoadInstance(id string) (*Instance, error) {
 		Ports:          ports,
 		State:          state,
 		Enabled:        enabled,
-		UptimeSeconds:  uptimeSeconds,
+		ActiveSince:    activeSince,
 		MemoryUsed:     memoryUsed,
 	}, nil
 }
@@ -69,7 +69,7 @@ func ListInstances() ([]*Instance, error) {
 	if err != nil {
 		return nil, err
 	}
-	var instances []*Instance
+	instances := []*Instance{}
 	for _, id := range ids {
 		inst, err := LoadInstance(id)
 		if err != nil {
@@ -80,32 +80,22 @@ func ListInstances() ([]*Instance, error) {
 	return instances, nil
 }
 
-// Validate checks the instance config for correctness.
+// Validate checks the instance config, ports, and memory budget for correctness.
 func (inst *Instance) Validate() error {
-	return inst.InstanceConfig.Validate()
-}
-
-// NewInstance validates the config and ports, checks ID uniqueness and memory budget,
-// and returns an Instance ready for Create().
-func NewInstance(config InstanceConfig, ports Ports) (*Instance, error) {
-	inst := &Instance{InstanceConfig: &config}
-	if err := inst.Validate(); err != nil {
-		return nil, err
+	if err := inst.InstanceConfig.Validate(); err != nil {
+		return err
 	}
-	if err := ValidateIDUnique(inst.ID); err != nil {
-		return nil, err
+	if err := inst.Ports.Validate(); err != nil {
+		return err
 	}
-	if err := ports.Validate(); err != nil {
-		return nil, err
-	}
-	if err := CheckMemoryBudget(inst.ID, inst.Memory); err != nil {
-		return nil, err
-	}
-	return inst, nil
+	return CheckMemoryBudget(inst.ID, inst.Memory)
 }
 
 // Create provisions a new instance: writes config.json, server.properties, eula.txt.
 func (inst *Instance) Create(ports Ports) error {
+	if err := ValidateIDUnique(inst.ID); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(InstanceDir(inst.ID), 0750); err != nil {
 		return &ServerError{Message: fmt.Sprintf("create instance dir: %s", err.Error())}
 	}
@@ -264,26 +254,19 @@ func (inst *Instance) RCON(cmd string) (string, error) {
 }
 
 type PatchRequest struct {
-	Name       *string  `json:"name"`
-	Vendor     *string  `json:"vendor"`
-	Version    *string  `json:"version"`
-	Binary     *string  `json:"binary"`
-	JavaArgs   []string `json:"java_args"`
-	ServerArgs []string `json:"server_args"`
-	Memory     *int     `json:"memory"`
-	GamePort   *int     `json:"game_port"`
-	RCONPort   *int     `json:"rcon_port"`
+	Name         *string  `json:"name"`
+	Binary       *string  `json:"binary"`
+	JavaArgs     []string `json:"java_args"`
+	ServerArgs   []string `json:"server_args"`
+	Memory       *int     `json:"memory"`
+	GamePort     *int     `json:"game_port"`
+	RCONPort     *int     `json:"rcon_port"`
+	RCONPassword *string  `json:"rcon_password"`
 }
 
 func (inst *Instance) Patch(req PatchRequest) error {
 	if req.Name != nil {
 		inst.Name = *req.Name
-	}
-	if req.Vendor != nil {
-		inst.Vendor = *req.Vendor
-	}
-	if req.Version != nil {
-		inst.Version = *req.Version
 	}
 	if req.Binary != nil {
 		inst.Binary = *req.Binary
@@ -305,7 +288,7 @@ func (inst *Instance) Patch(req PatchRequest) error {
 		return &ServerError{Message: fmt.Sprintf("write instance config: %s", err.Error())}
 	}
 
-	if req.GamePort != nil || req.RCONPort != nil {
+	if req.GamePort != nil || req.RCONPort != nil || req.RCONPassword != nil {
 		status, err := SDManager.Status(inst.ID)
 		if err != nil {
 			return &ServerError{Message: fmt.Sprintf("check status: %s", err.Error())}
@@ -320,6 +303,9 @@ func (inst *Instance) Patch(req PatchRequest) error {
 		}
 		if req.RCONPort != nil {
 			ports.RCON = *req.RCONPort
+		}
+		if req.RCONPassword != nil {
+			ports.RCONPassword = *req.RCONPassword
 		}
 		if err := ports.Validate(); err != nil {
 			return err

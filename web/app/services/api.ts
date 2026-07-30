@@ -7,7 +7,7 @@ import { handleError, handleRequestError } from './error'
 let requestPrefix: string | null = null
 function getRequestPrefix(): string {
     if (requestPrefix === null) {
-        requestPrefix = import.meta.dev ? `http://${useRuntimeConfig().public.apiHost}:8080` : ''
+        requestPrefix = import.meta.dev ? `http://localhost:8080` : ''
     }
     return requestPrefix
 }
@@ -30,7 +30,7 @@ export interface Instance {
     }
     state: InstanceState
     enabled: boolean
-    uptime_seconds: number
+    active_since: string | null
     memory_used: number
 }
 

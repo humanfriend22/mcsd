@@ -11,13 +11,13 @@ import (
 	. "mcsd/utils"
 )
 
-type JavaInfo struct {
+type JavaBinary struct {
 	Path    string `json:"path"`
 	Version string `json:"version"`
 	Vendor  string `json:"vendor"`
 }
 
-func DiscoverJavaBinaries() []JavaInfo {
+func DiscoverJavaBinaries() []JavaBinary {
 	seen := make(map[string]bool)
 	var results []javaCandidate
 
@@ -68,7 +68,7 @@ func DiscoverJavaBinaries() []JavaInfo {
 		}
 	}
 
-	var binaries []JavaInfo
+	var binaries []JavaBinary
 	for _, c := range results {
 		bin := probeJavaBinary(c.path)
 		if bin != nil {
@@ -102,7 +102,7 @@ func isJavaBinaryName(name string) bool {
 	return false
 }
 
-func probeJavaBinary(path string) *JavaInfo {
+func probeJavaBinary(path string) *JavaBinary {
 	cmd := exec.Command(path, "-version")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -111,7 +111,7 @@ func probeJavaBinary(path string) *JavaInfo {
 	return parseJavaVersion(path, string(out))
 }
 
-func parseJavaVersion(path, output string) *JavaInfo {
+func parseJavaVersion(path, output string) *JavaBinary {
 	// Typical output: openjdk version "21.0.1" 2024-01-16 LTS
 	// or: java version "17.0.1" 2021-10-19
 	// or: Java(TM) SE Runtime Environment (build 21.0.1+13-LTS-58)
@@ -153,7 +153,7 @@ func parseJavaVersion(path, output string) *JavaInfo {
 		}
 	}
 
-	return &JavaInfo{
+	return &JavaBinary{
 		Path:    path,
 		Version: version,
 		Vendor:  vendor,

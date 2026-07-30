@@ -5,7 +5,7 @@ import {
   ServerOutline, GitNetworkOutline, LayersOutline,
   GlobeOutline, CopyOutline, CheckmarkOutline, TimeOutline
 } from '@vicons/ionicons5'
-import { formatUptime, formatMemoryMB } from '~/utils/format'
+import { formatUptimeSince, formatMemoryMB } from '~/utils/format'
 import type { Instance } from '~/services/api'
 
 const { instance } = defineProps<{ instance: Instance }>()
@@ -38,9 +38,8 @@ const memLabel = computed(() => {
 })
 
 const uptimeLabel = computed(() => {
-  const secs = instance.uptime_seconds
-  if (!secs || instance.state !== 'active') return null
-  return formatUptime(secs)
+  if (!instance.active_since || instance.state !== 'active') return null
+  return formatUptimeSince(instance.active_since)
 })
 
 const copied = ref(false)

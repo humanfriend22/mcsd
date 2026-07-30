@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { NIcon, NTag } from 'naive-ui'
 import { TimeOutline, HardwareChipOutline } from '@vicons/ionicons5'
-import { formatUptime, formatMemoryMB } from '~/utils/format'
+import { formatUptimeSince, formatMemoryMB } from '~/utils/format'
 import { useCurrentInstance } from '~/services/api'
 
 const instance = useCurrentInstance();
@@ -31,9 +31,9 @@ const isRunning = computed(() => instance.value.state === 'active')
   <div class="flex flex-wrap items-center gap-3">
     <h1 class="text-xl font-bold">{{ instance.name }}</h1>
     <NTag :type="statusType" size="small">{{ statusLabel }}</NTag>
-    <span v-if="instance.uptime_seconds && isRunning" class="inline-flex items-center gap-1 text-xs text-neutral-500">
+    <span v-if="instance.active_since && isRunning" class="inline-flex items-center gap-1 text-xs text-neutral-500">
       <NIcon :component="TimeOutline" :size="13" />
-      {{ formatUptime(instance.uptime_seconds) }}
+      {{ formatUptimeSince(instance.active_since) }}
     </span>
     <span v-if="isRunning" class="inline-flex items-center gap-1 text-xs text-neutral-500">
       <NIcon :component="HardwareChipOutline" :size="13" />

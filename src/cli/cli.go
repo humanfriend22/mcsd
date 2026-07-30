@@ -28,7 +28,8 @@ type CLI struct {
 // TODO: create a REPL-like interface to bypass typing the instance id every time
 type InstanceCmd struct {
 	Create  CreateCmd  `cmd:"" group:"instance" help:"Create a new server instance (interactive)"`
-	Edit    EditCmd    `cmd:"" group:"instance" help:"Edit instance config in $EDITOR"`
+	Edit    EditCmd    `cmd:"" group:"instance" help:"Edit an instance's name, ports, RAM, and Java flags (interactive)"`
+	Upgrade UpgradeCmd `cmd:"" group:"instance" help:"Upgrade a server to a new version/build (interactive)"`
 	Start   StartCmd   `cmd:"" group:"instance" help:"Start a server"`
 	Stop    StopCmd    `cmd:"" group:"instance" help:"Stop a server"`
 	Restart RestartCmd `cmd:"" group:"instance" help:"Restart a server"`

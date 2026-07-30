@@ -81,12 +81,12 @@ func ListInstanceConfigs() ([]string, error) {
 	entries, err := os.ReadDir(DefaultBasePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return []string{}, nil
 		}
 		return nil, &ServerError{Message: fmt.Sprintf("read instances dir: %s", err.Error())}
 	}
 
-	var names []string
+	names := []string{}
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue

@@ -1,12 +1,12 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
-	"os/exec"
+	"strconv"
 
 	"mcsd/core"
+
+	"github.com/charmbracelet/huh"
 )
 
 type EditCmd struct {
@@ -14,64 +14,73 @@ type EditCmd struct {
 }
 
 func (c *EditCmd) Run() error {
-	cfg, err := core.LoadInstanceConfig(c.ID)
+	inst, err := core.LoadInstance(c.ID)
 	if err != nil {
 		return err
 	}
 
-	raw, err := json.Marshal(cfg)
+	status, err := inst.Status()
 	if err != nil {
-		return fmt.Errorf("marshal instance: %w", err)
+		return err
 	}
-	var fields map[string]any
-	json.Unmarshal(raw, &fields)
-	delete(fields, "id")
-	editable, _ := json.MarshalIndent(fields, "", "  ")
-
-	tmp, err := os.CreateTemp("", "mcsd-edit-*.json")
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-
-	if _, err := tmp.Write(editable); err != nil {
-		tmp.Close()
-		return fmt.Errorf("write temp file: %w", err)
-	}
-	tmp.Close()
-
-	editor := os.Getenv("EDITOR")
-	if editor == "" {
-		editor = "nano"
-	}
-	editorCmd := exec.Command(editor, tmpPath)
-	editorCmd.Stdin = os.Stdin
-	editorCmd.Stdout = os.Stdout
-	editorCmd.Stderr = os.Stderr
-	if err := editorCmd.Run(); err != nil {
-		return fmt.Errorf("editor: %w", err)
+	if status.State == "active" {
+		return fmt.Errorf("instance %q is active — stop it before editing", inst.ID)
 	}
 
-	updated, err := os.ReadFile(tmpPath)
-	if err != nil {
-		return fmt.Errorf("read edited file: %w", err)
+	isJava := inst.Vendor != "Bedrock"
+
+	name := inst.Name
+	gamePortStr := strconv.Itoa(inst.Ports.Game)
+	rconPortStr := strconv.Itoa(inst.Ports.RCON)
+	rconPass := inst.Ports.RCONPassword
+	ramStr := strconv.Itoa(inst.Memory)
+	flagsIdx := 0
+	if hasAikarFlags(inst.JavaArgs) {
+		flagsIdx = 1
 	}
 
-	var edited core.InstanceConfig
-	if err := json.Unmarshal(updated, &edited); err != nil {
-		return fmt.Errorf("parse edited JSON: %w", err)
-	}
-	edited.ID = c.ID
+	summary := fmt.Sprintf(
+		"ID: %s\nVendor: %s\nVersion: %s\nBuild: %d\nBinary: %s\n\nUse 'mcsd upgrade %s' to change vendor/version/build.",
+		inst.ID, inst.Vendor, inst.Version, inst.Build, inst.Binary, inst.ID,
+	)
 
-	if err := edited.Validate(); err != nil {
-		return fmt.Errorf("validation failed: %w", err)
+	groups := []*huh.Group{
+		huh.NewGroup(
+			huh.NewNote().
+				Title("Current configuration").
+				Description(summary),
+			huh.NewInput().
+				Title("Display name").
+				Value(&name),
+		),
+		networkGroup(&gamePortStr, &rconPortStr, &rconPass),
+		resourcesGroup(isJava, &ramStr, &flagsIdx),
 	}
 
-	if err := core.WriteInstanceConfig(c.ID, &edited); err != nil {
-		return fmt.Errorf("save instance: %w", err)
+	form := huh.NewForm(groups...)
+	if aborted, err := runForm(form); aborted || err != nil {
+		return err
 	}
 
-	fmt.Printf("Updated %s.\n", c.ID)
+	gamePort, _ := strconv.Atoi(gamePortStr)
+	rconPort, _ := strconv.Atoi(rconPortStr)
+	ram, _ := strconv.Atoi(ramStr)
+
+	req := core.PatchRequest{
+		Name:         &name,
+		Memory:       &ram,
+		GamePort:     &gamePort,
+		RCONPort:     &rconPort,
+		RCONPassword: &rconPass,
+	}
+	if isJava {
+		req.JavaArgs = buildJavaArgs(ram, flagsIdx)
+	}
+
+	if err := inst.Patch(req); err != nil {
+		return err
+	}
+
+	fmt.Printf("Updated %s.\n", inst.Name)
 	return nil
 }

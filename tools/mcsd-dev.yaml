@@ -21,3 +21,20 @@ dns:
 portForwards:
 - guestPort: 8080
   static: true
+- guestPort: 25565
+  static: true
+
+provision:
+- mode: system
+  script: |
+    #!/bin/bash
+    apt update
+
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    echo 'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"' >> ~/.bashrc
+
+    brew install dufs
+    apt install -y openjdk-25-jdk-headless
+
+user:
+  name: admin

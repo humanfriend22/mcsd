@@ -149,51 +149,52 @@ async function handleDelete() {
 <template>
   <div class="mt-2 space-y-10 max-w-5xl">
 
+    <div v-if="isRunning" class="text-sm text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded px-3 py-2">
+      Stop the server to edit settings.
+    </div>
+
     <!-- Configuration -->
     <section class="space-y-5">
       <h2 class="text-base font-semibold text-neutral-100">Configuration</h2>
       <div class="grid grid-cols-3 gap-4">
         <div>
           <div class="text-sm text-neutral-400 mb-1.5">Name</div>
-          <n-input v-model:value="nameInput" placeholder="Instance name" />
+          <n-input v-model:value="nameInput" placeholder="Instance name" :disabled="isRunning" />
         </div>
         <div v-if="isJava">
           <div class="text-sm text-neutral-400 mb-1.5">Java binary</div>
           <n-select v-if="javaBinaries.length > 0" v-model:value="selectedJavaPath" :options="javaBinaryOptions"
-            placeholder="Select Java runtime" />
+            placeholder="Select Java runtime" :disabled="isRunning" />
           <n-input v-if="isCustomJava" v-model:value="customJavaPath" placeholder="/usr/bin/java"
-            class="font-mono mt-2" />
+            class="font-mono mt-2" :disabled="isRunning" />
         </div>
         <div v-else>
           <div class="text-sm text-neutral-400 mb-1.5">Binary path</div>
-          <n-input v-model:value="binaryInput" placeholder="server" class="font-mono" />
+          <n-input v-model:value="binaryInput" placeholder="server" class="font-mono" :disabled="isRunning" />
         </div>
         <div>
           <div class="text-sm text-neutral-400 mb-1.5">Memory (MB)</div>
           <n-input-number v-model:value="memoryInput" :min="512" :max="maxMemory" :step="256" class="w-full"
-            placeholder="e.g. 2048" />
+            placeholder="e.g. 2048" :disabled="isRunning" />
         </div>
       </div>
       <div class="space-y-4">
         <div>
           <div class="text-sm text-neutral-400 mb-1.5">Server args</div>
-          <n-input v-model:value="serverArgsInput" placeholder="nogui" class="font-mono" />
+          <n-input v-model:value="serverArgsInput" placeholder="nogui" class="font-mono" :disabled="isRunning" />
         </div>
         <div>
           <div class="text-sm text-neutral-400 mb-1.5">Java args</div>
           <n-input v-model:value="javaArgsInput" type="textarea" placeholder="-Xms512M -Xmx2G -XX:+UseG1GC"
-            class="font-mono" :autosize="true" />
+            class="font-mono" :autosize="true" :disabled="isRunning" />
         </div>
       </div>
-      <n-button type="primary" :loading="saving" @click="saveSettings">Save settings</n-button>
+      <n-button type="primary" :loading="saving" :disabled="isRunning" @click="saveSettings">Save settings</n-button>
     </section>
 
     <!-- Network -->
     <section class="space-y-5">
       <h2 class="text-base font-semibold text-neutral-100">Network</h2>
-      <div v-if="isRunning" class="text-sm text-amber-400 bg-amber-400/10 border border-amber-400/30 rounded px-3 py-2">
-        Stop the server to change ports.
-      </div>
       <div class="grid grid-cols-2 gap-4">
         <div>
           <div class="text-sm text-neutral-400 mb-1.5">Game port</div>
@@ -206,7 +207,7 @@ async function handleDelete() {
             placeholder="25575" />
         </div>
       </div>
-      <n-button type="primary" :loading="saving" @click="saveSettings">Save settings</n-button>
+      <n-button type="primary" :loading="saving" :disabled="isRunning" @click="saveSettings">Save settings</n-button>
     </section>
 
     <!-- Danger zone -->

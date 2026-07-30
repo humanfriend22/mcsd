@@ -4,7 +4,7 @@ import {
   TimeOutline, HardwareChipOutline, GlobeOutline,
   WifiOutline, CopyOutline, CheckmarkOutline,
 } from '@vicons/ionicons5'
-import { formatUptime, formatMemoryMB } from '~/utils/format'
+import { formatUptimeSince, formatMemoryMB } from '~/utils/format'
 import {
   startInstance,
   stopInstance,
@@ -99,7 +99,7 @@ async function copyAddress(address: string, key: 'local' | 'public') {
       </InstanceStatCard>
 
       <InstanceStatCard label="Uptime" :icon="TimeOutline"
-        :value="isRunning && instance.uptime_seconds ? formatUptime(Math.floor((Date.now() - new Date(instance.uptime_seconds).getTime()) / 1000)) : '—'" />
+        :value="isRunning && instance.active_since ? formatUptimeSince(instance.active_since) : '—'" />
 
       <InstanceStatCard label="Local address" :icon="WifiOutline">
         <div class="flex items-center justify-between gap-2">

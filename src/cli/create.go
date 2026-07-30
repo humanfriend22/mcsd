@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"fmt"
 	"strconv"
 
@@ -39,6 +38,7 @@ func (c *CreateCmd) Run() error {
 func runCreateWizard() (*core.Instance, core.Ports, string, error) {
 	zero := core.Ports{}
 
+	// ID, Name, Vendor
 	var id, name string
 	var vendorIdx int
 
@@ -50,7 +50,7 @@ func runCreateWizard() (*core.Instance, core.Ports, string, error) {
 	form1 := huh.NewForm(
 		huh.NewGroup(
 			huh.NewInput().
-				Title("Server ID").
+				Title("Instance ID").
 				Value(&id).
 				Validate(core.ValidateIDUnique),
 			huh.NewInput().
@@ -63,37 +63,24 @@ func runCreateWizard() (*core.Instance, core.Ports, string, error) {
 				Value(&vendorIdx),
 		),
 	)
-	if err := form1.Run(); err != nil {
-		if errors.Is(err, huh.ErrUserAborted) {
-			return nil, zero, "", nil
-		}
+	if aborted, err := runForm(form1); aborted || err != nil {
 		return nil, zero, "", err
 	}
 	if name == "" {
 		name = id
 	}
-
 	selectedVendor := vendors.All[vendorIdx]
 	isJava := selectedVendor.Name() != "Bedrock"
 
-	versionList, err := selectedVendor.Versions()
-	if err != nil {
-		return nil, zero, "", fmt.Errorf("fetch versions: %w", err)
-	}
-	versionOptions := make([]huh.Option[string], len(versionList))
-	for i, v := range versionList {
-		versionOptions[i] = huh.NewOption(v, v)
-	}
-
 	// Discover Java binaries (only for Java-based vendors)
-	var javaBinaries []core.JavaInfo
+	var javaBinaries []core.JavaBinary
 	var javaOptions []huh.Option[int]
 	javaBinaryIdx := -1
 	if isJava {
 		javaBinaries = core.DiscoverJavaBinaries()
 		javaOptions = make([]huh.Option[int], 0, len(javaBinaries)+1)
-		for i, jb := range javaBinaries {
-			label := fmt.Sprintf("%s %s — %s", jb.Vendor, jb.Version, jb.Path)
+		for i, b := range javaBinaries {
+			label := fmt.Sprintf("%s %s — %s", b.Vendor, b.Version, b.Path)
 			javaOptions = append(javaOptions, huh.NewOption(label, i))
 		}
 		javaOptions = append(javaOptions, huh.NewOption("Custom path…", -1))
@@ -102,7 +89,7 @@ func runCreateWizard() (*core.Instance, core.Ports, string, error) {
 		}
 	}
 
-	var version, rconPass, customJavaPath string
+	var rconPass, customJavaPath string
 	var gamePortStr, rconPortStr, ramStr string
 	var flagsIdx int
 
@@ -111,121 +98,29 @@ func runCreateWizard() (*core.Instance, core.Ports, string, error) {
 	rconPass = "rcon"
 	ramStr = strconv.Itoa(core.DefaultMemory())
 
-	// Step 1: Version selection
-	versionForm := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("Minecraft version").
-				Options(versionOptions...).
-				Value(&version),
-		).Title("Version"),
-	)
-	if err := versionForm.Run(); err != nil {
-		if errors.Is(err, huh.ErrUserAborted) {
-			return nil, zero, "", nil
-		}
+	// Steps 1-2: Version and build selection
+	version, build, aborted, err := selectVersionAndBuild(selectedVendor, "", 0)
+	if aborted || err != nil {
 		return nil, zero, "", err
-	}
-
-	// Step 2: Build picker (PaperMC, Purpur, etc.)
-	var build int
-	builds, err := selectedVendor.Builds(version)
-	if err != nil {
-		return nil, zero, "", fmt.Errorf("fetch builds: %w", err)
-	}
-	if len(builds) > 0 {
-		buildOptions := make([]huh.Option[int], len(builds))
-		for i, b := range builds {
-			label := fmt.Sprintf("#%d [%s]", b.Number, b.Channel)
-			if len(b.Time) >= 10 {
-				label += " " + b.Time[:10]
-			}
-			buildOptions[i] = huh.NewOption(label, b.Number)
-		}
-		buildForm := huh.NewForm(
-			huh.NewGroup(
-				huh.NewSelect[int]().
-					Title("Server build").
-					Options(buildOptions...).
-					Value(&build),
-			).Title("Build"),
-		)
-		if err := buildForm.Run(); err != nil {
-			if errors.Is(err, huh.ErrUserAborted) {
-				return nil, zero, "", nil
-			}
-			return nil, zero, "", err
-		}
-	} else if selectedVendor.Name() != "Fabric" {
-		fmt.Printf("No builds available for %s %s — using latest available.\n", selectedVendor.Name(), version)
 	}
 
 	// Step 3: Remaining config (Java, Network, Resources)
 	var configGroups []*huh.Group
 	if isJava {
-		configGroups = []*huh.Group{
-			huh.NewGroup(
-				huh.NewSelect[int]().
-					Title("Java runtime").
-					Options(javaOptions...).
-					Value(&javaBinaryIdx),
-			),
-			huh.NewGroup(
-				huh.NewInput().
-					Title("Game port").
-					Value(&gamePortStr).
-					Validate(validatePort),
-				huh.NewInput().
-					Title("RCON port").
-					Value(&rconPortStr).
-					Validate(validatePort),
-				huh.NewInput().
-					Title("RCON password").
-					Value(&rconPass),
-			).Title("Network"),
-			huh.NewGroup(
-				huh.NewInput().
-					Title("RAM limit (MB)").
-					Value(&ramStr).
-					Validate(func(s string) error {
-						n, err := strconv.Atoi(s)
-						if err != nil || n < 512 {
-							return fmt.Errorf("must be at least 512")
-						}
-						return nil
-					}),
-				huh.NewSelect[int]().
-					Title("Java flags").
-					Options(
-						huh.NewOption("Aikar's flags (recommended)", 1),
-						huh.NewOption("Bare (Xms/Xmx only)", 0),
-					).
-					Value(&flagsIdx),
-			).Title("Resources"),
-		}
-	} else {
-		configGroups = []*huh.Group{
-			huh.NewGroup(
-				huh.NewInput().
-					Title("Game port").
-					Value(&gamePortStr).
-					Validate(validatePort),
-				huh.NewInput().
-					Title("RCON port").
-					Value(&rconPortStr).
-					Validate(validatePort),
-				huh.NewInput().
-					Title("RCON password").
-					Value(&rconPass),
-			).Title("Network"),
-		}
+		configGroups = append(configGroups, huh.NewGroup(
+			huh.NewSelect[int]().
+				Title("Java runtime").
+				Options(javaOptions...).
+				Value(&javaBinaryIdx),
+		))
 	}
+	configGroups = append(configGroups,
+		networkGroup(&gamePortStr, &rconPortStr, &rconPass),
+		resourcesGroup(isJava, &ramStr, &flagsIdx),
+	)
 
 	configForm := huh.NewForm(configGroups...)
-	if err := configForm.Run(); err != nil {
-		if errors.Is(err, huh.ErrUserAborted) {
-			return nil, zero, "", nil
-		}
+	if aborted, err := runForm(configForm); aborted || err != nil {
 		return nil, zero, "", err
 	}
 
@@ -246,10 +141,7 @@ func runCreateWizard() (*core.Instance, core.Ports, string, error) {
 						}),
 				),
 			)
-			if err := customForm.Run(); err != nil {
-				if errors.Is(err, huh.ErrUserAborted) {
-					return nil, zero, "", nil
-				}
+			if aborted, err := runForm(customForm); aborted || err != nil {
 				return nil, zero, "", err
 			}
 			javaBin = customJavaPath
@@ -278,10 +170,7 @@ func runCreateWizard() (*core.Instance, core.Ports, string, error) {
 
 	var javaArgs []string
 	if isJava {
-		javaArgs = []string{"-Xms512M", fmt.Sprintf("-Xmx%dM", ram)}
-		if flagsIdx == 1 {
-			javaArgs = append(javaArgs, core.AikarFlags...)
-		}
+		javaArgs = buildJavaArgs(ram, flagsIdx)
 	}
 
 	cfg := core.InstanceConfig{
@@ -295,17 +184,9 @@ func runCreateWizard() (*core.Instance, core.Ports, string, error) {
 		ServerArgs: []string{"nogui"},
 		Memory:     ram,
 	}
-	inst, err := core.NewInstance(cfg, ports)
-	if err != nil {
+	inst := &core.Instance{InstanceConfig: &cfg, Ports: ports}
+	if err := inst.Validate(); err != nil {
 		return nil, zero, "", err
 	}
 	return inst, ports, downloadURL, nil
-}
-
-func validatePort(s string) error {
-	n, err := strconv.Atoi(s)
-	if err != nil || n < 1 || n > 65535 {
-		return fmt.Errorf("must be 1-65535")
-	}
-	return nil
 }

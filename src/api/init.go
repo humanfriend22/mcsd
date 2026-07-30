@@ -13,10 +13,10 @@ type vendorResponse struct {
 }
 
 type initResponse struct {
-	Vendors      []vendorResponse `json:"vendors"`
-	PublicIP     string           `json:"public_ip"`
-	LocalIP      string           `json:"local_ip"`
-	JavaBinaries []core.JavaInfo  `json:"java_binaries"`
+	Vendors      []vendorResponse  `json:"vendors"`
+	PublicIP     string            `json:"public_ip"`
+	LocalIP      string            `json:"local_ip"`
+	JavaBinaries []core.JavaBinary `json:"java_binaries"`
 }
 
 func getInitial(w http.ResponseWriter, r *http.Request) {

@@ -1,14 +1,14 @@
 [env]
 GOOS = "linux"
 GOARCH = "arm64"
-LIMA_INSTANCE = "debian-trixie"
+LIMA_INSTANCE = "mcsd-dev"
 
 # web/
 
 [tasks."web:dev"]
 description = "Run the Nuxt dev server"
 dir = "web"
-env = { NUXT_PUBLIC_API_HOST = "{{env.REMOTE_IP}}" }
+raw = true
 run = "bun run dev"
 
 [tasks."build:web"]
@@ -72,25 +72,25 @@ run = [{ task = "build:hot" }, { task = "_deploy" }]
 # Lima VM
 
 [tasks."vm:create"]
-description = "Create the dev VM (once)"
-run = "limactl create --yes ./debian-trixie.yaml"
+description = "Create VM"
+run = "limactl create --yes ./tools/mcsd-dev.yaml"
 
 [tasks."vm:up"]
-description = "Start the dev VM"
+description = "Start VM"
 run = 'limactl start "$LIMA_INSTANCE"'
 
 [tasks."vm:down"]
-description = "Stop the dev VM"
+description = "Stop VM"
 run = 'limactl stop "$LIMA_INSTANCE"'
 
 [tasks."vm:shell"]
-description = "Interactive shell in the dev VM"
+description = "Interactive shell in VM"
 raw = true
 run = 'limactl shell "$LIMA_INSTANCE"'
 
 [tasks."vm:delete"]
 # depends = "vm:down"
-description = "Delete the VM entirely; vm:up rebuilds it from scratch"
+description = "Delete VM"
 run = 'limactl delete --force "$LIMA_INSTANCE"'
 
 [tools]

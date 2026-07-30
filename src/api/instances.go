@@ -32,8 +32,8 @@ func createInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inst, err := core.NewInstance(req.InstanceConfig, req.Ports)
-	if err != nil {
+	inst := &core.Instance{InstanceConfig: &req.InstanceConfig, Ports: req.Ports}
+	if err := inst.Validate(); err != nil {
 		writeError(w, err)
 		return
 	}
