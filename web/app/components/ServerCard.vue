@@ -17,11 +17,22 @@ const statusType = computed(() => {
     case 'activating':
     case 'deactivating': return 'warning'
     case 'failed': return 'error'
+    case 'error': return 'error'
     default: return 'default'
   }
 })
 
 const statusLabel = computed(() => instance.state)
+
+// Tooltip copy for a degraded instance. Renders the backend's message
+// verbatim; falls back to a generic string when it's absent, empty, or
+// whitespace-only so the tooltip never opens blank. Null (no tooltip)
+// for every other state.
+const errorMessage = computed(() => {
+  if (instance.state !== 'error') return null
+  const message = instance.error?.trim()
+  return message ? message : 'Unknown error'
+})
 
 const gamePort = computed(() => instance.ports?.game ?? null)
 
@@ -63,7 +74,13 @@ async function copyJoin(e: Event) {
       <span class="text-lg font-medium text-neutral-100">{{ instance.name }}</span>
     </template>
     <template #header-extra>
-      <n-tag :type="statusType" size="small">{{ statusLabel }}</n-tag>
+      <NTooltip v-if="errorMessage" trigger="hover" style="max-width: 320px;">
+        <template #trigger>
+          <n-tag :type="statusType" size="small">{{ statusLabel }}</n-tag>
+        </template>
+        <span class="text-[13px]">{{ errorMessage }}</span>
+      </NTooltip>
+      <n-tag v-else :type="statusType" size="small">{{ statusLabel }}</n-tag>
     </template>
 
     <!-- Config strip -->
