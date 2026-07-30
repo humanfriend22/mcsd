@@ -1,8 +1,11 @@
 package core
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -82,5 +85,134 @@ func TestTracerDegradedInstancePath(t *testing.T) {
 	}
 	if !strings.Contains(body, `"id":"second"`) {
 		t.Fatalf("expected marshaled JSON to contain id:second, got: %s", body)
+	}
+}
+
+// TestBuildInstanceList pins the count, order, and duplicate-id invariants
+// (D-01): the returned length always equals len(ids), input order is
+// preserved position-for-position, and duplicate ids never merge.
+func TestBuildInstanceList(t *testing.T) {
+	healthy := func(id string) (*Instance, error) {
+		return &Instance{InstanceConfig: &InstanceConfig{ID: id, Name: id}, State: "inactive"}, nil
+	}
+	failing := func(id string) (*Instance, error) {
+		return nil, &ServerError{Message: fmt.Sprintf("boom loading %s", id)}
+	}
+
+	t.Run("zero ids", func(t *testing.T) {
+		instances := buildInstanceList(nil, healthy)
+		if instances == nil {
+			t.Fatalf("expected a non-nil empty slice, got nil")
+		}
+		if len(instances) != 0 {
+			t.Fatalf("expected 0 entries, got %d", len(instances))
+		}
+	})
+
+	t.Run("one failing id", func(t *testing.T) {
+		instances := buildInstanceList([]string{"only"}, failing)
+		if len(instances) != 1 {
+			t.Fatalf("expected 1 entry, got %d", len(instances))
+		}
+		if instances[0].State != InstanceStateError || instances[0].ID != "only" {
+			t.Fatalf("expected degraded entry for 'only', got %+v", instances[0])
+		}
+	})
+
+	t.Run("all ids fail", func(t *testing.T) {
+		ids := []string{"a", "b", "c"}
+		instances := buildInstanceList(ids, failing)
+		if len(instances) != len(ids) {
+			t.Fatalf("expected %d entries, got %d", len(ids), len(instances))
+		}
+		for i, id := range ids {
+			if instances[i].ID != id {
+				t.Fatalf("position %d: expected id %q, got %q", i, id, instances[i].ID)
+			}
+			if instances[i].State != InstanceStateError {
+				t.Fatalf("position %d: expected degraded state, got %q", i, instances[i].State)
+			}
+		}
+	})
+
+	t.Run("interleaved healthy and degraded", func(t *testing.T) {
+		ids := []string{"h1", "f1", "h2", "f2", "h3"}
+		load := func(id string) (*Instance, error) {
+			if strings.HasPrefix(id, "f") {
+				return failing(id)
+			}
+			return healthy(id)
+		}
+		instances := buildInstanceList(ids, load)
+		if len(instances) != len(ids) {
+			t.Fatalf("expected %d entries, got %d", len(ids), len(instances))
+		}
+		for i, id := range ids {
+			if instances[i].ID != id {
+				t.Fatalf("position %d: expected id %q, got %q (order not preserved)", i, id, instances[i].ID)
+			}
+			wantDegraded := strings.HasPrefix(id, "f")
+			gotDegraded := instances[i].State == InstanceStateError
+			if wantDegraded != gotDegraded {
+				t.Fatalf("position %d (id %q): expected degraded=%v, got degraded=%v", i, id, wantDegraded, gotDegraded)
+			}
+		}
+	})
+
+	t.Run("duplicate ids never merge", func(t *testing.T) {
+		ids := []string{"dup", "dup", "dup"}
+		instances := buildInstanceList(ids, failing)
+		if len(instances) != 3 {
+			t.Fatalf("expected 3 separate entries for duplicate ids, got %d", len(instances))
+		}
+		for i, inst := range instances {
+			if inst.ID != "dup" {
+				t.Fatalf("position %d: expected id 'dup', got %q", i, inst.ID)
+			}
+		}
+	})
+}
+
+// TestLogInstanceLoadFailureDedupe pins the log-rate invariant (T-01-03):
+// an unchanged repeated failure logs once, a changed message logs again, and
+// clearInstanceLoadFailure re-arms logging for a subsequent recurrence.
+func TestLogInstanceLoadFailureDedupe(t *testing.T) {
+	var buf bytes.Buffer
+	prevOutput := log.Writer()
+	prevFlags := log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(prevOutput)
+		log.SetFlags(prevFlags)
+	})
+
+	const id = "dedupe-test-instance"
+	t.Cleanup(func() { clearInstanceLoadFailure(id) })
+	clearInstanceLoadFailure(id) // isolate from any prior subtest state
+
+	countLines := func() int {
+		s := strings.TrimRight(buf.String(), "\n")
+		if s == "" {
+			return 0
+		}
+		return len(strings.Split(s, "\n"))
+	}
+
+	logInstanceLoadFailure(id, &ServerError{Message: "disk error A"})
+	logInstanceLoadFailure(id, &ServerError{Message: "disk error A"})
+	if got := countLines(); got != 1 {
+		t.Fatalf("expected 1 log line for two identical consecutive failures, got %d: %q", got, buf.String())
+	}
+
+	logInstanceLoadFailure(id, &ServerError{Message: "disk error B"})
+	if got := countLines(); got != 2 {
+		t.Fatalf("expected 2 log lines once the message changes, got %d: %q", got, buf.String())
+	}
+
+	clearInstanceLoadFailure(id)
+	logInstanceLoadFailure(id, &ServerError{Message: "disk error B"})
+	if got := countLines(); got != 3 {
+		t.Fatalf("expected logging to re-arm after clearInstanceLoadFailure, got %d lines: %q", got, buf.String())
 	}
 }

@@ -253,7 +253,10 @@ func (inst *Instance) Upgrade(v vendors.Vendor, version string, build int) error
 func (inst *Instance) EnsureStartReady() error {
 	ports, err := ReadPorts(InstanceDir(inst.ID))
 	if err != nil {
-		return &ServerError{Message: fmt.Sprintf("read ports: %s", err.Error())}
+		// Return ReadPorts' error unchanged (not rewrapped into a generic
+		// ServerError) so errors.As in src/api/api.go still classifies a
+		// corrupt port value as a ValidationError (400), not a 500 (D-05/D-06).
+		return err
 	}
 	if err := checkPortAvailable(ports.Game); err != nil {
 		return &ValidationError{Message: fmt.Sprintf("game port: %s", err.Error())}
