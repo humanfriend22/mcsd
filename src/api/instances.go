@@ -8,8 +8,41 @@ import (
 	"mcsd/vendors"
 )
 
+// degradedInstance is the API layer's own error representation for an
+// instance id whose config or ports could not be loaded — core no longer
+// fabricates one. It embeds *core.Instance anonymously so the JSON field set
+// is unchanged from a healthy instance (flattened by anonymous embedding),
+// plus an Error field. web/app/services/api.ts reads instance.error off this
+// same shape, so the wire contract stays byte-identical to before.
+type degradedInstance struct {
+	*core.Instance
+	Error string `json:"error,omitempty"`
+}
+
+// newDegradedInstance builds the API's degraded payload for an id that
+// failed to load. No config value is fabricated beyond ID/Name (both set to
+// id, since no real name is available) and the shared degraded state.
+func newDegradedInstance(id string, err error) degradedInstance {
+	return degradedInstance{
+		Instance: &core.Instance{
+			InstanceConfig: &core.InstanceConfig{ID: id, Name: id},
+			State:          core.InstanceStateError,
+		},
+		Error: err.Error(),
+	}
+}
+
 func listInstances(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, getCachedInstances())
+	results := getCachedInstances()
+	payload := make([]any, 0, len(results))
+	for _, res := range results {
+		if res.Err != nil {
+			payload = append(payload, newDegradedInstance(res.ID, res.Err))
+			continue
+		}
+		payload = append(payload, res.Instance)
+	}
+	writeJSON(w, http.StatusOK, payload)
 }
 
 func getInstance(w http.ResponseWriter, r *http.Request) {

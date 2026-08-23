@@ -100,17 +100,21 @@ func (c *ListCmd) Run() error {
 
 // writeInstanceTable renders the ID/STATUS table for ListCmd. It writes to
 // the given io.Writer rather than os.Stdout directly so the output format is
-// testable. A degraded instance (State == core.InstanceStateError) gets an
-// additional indented line carrying its load-failure message immediately
-// after its row; the line is omitted entirely when the message is empty.
-func writeInstanceTable(w io.Writer, instances []*core.Instance) error {
+// testable. A degraded result (Err non-nil) prints the shared degraded-state
+// constant as its status word, then — when the error message is non-empty —
+// an additional indented line carrying it, immediately after its row.
+func writeInstanceTable(w io.Writer, results []core.InstanceResult) error {
 	writer := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(writer, "ID\tSTATUS")
-	for _, inst := range instances {
-		fmt.Fprintf(writer, "%s\t%s\n", inst.ID, friendlyState(inst.State))
-		if inst.State == core.InstanceStateError && inst.Error != "" {
-			fmt.Fprintf(writer, "  %s\t\n", inst.Error)
+	for _, res := range results {
+		if res.Err != nil {
+			fmt.Fprintf(writer, "%s\t%s\n", res.ID, core.InstanceStateError)
+			if msg := res.Err.Error(); msg != "" {
+				fmt.Fprintf(writer, "  %s\t\n", msg)
+			}
+			continue
 		}
+		fmt.Fprintf(writer, "%s\t%s\n", res.ID, friendlyState(res.Instance.State))
 	}
 	return writer.Flush()
 }
