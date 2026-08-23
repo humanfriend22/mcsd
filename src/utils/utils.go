@@ -3,6 +3,7 @@ package utils
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -25,4 +26,13 @@ func WriteAtomic(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// Joins base and path, but ensures the result is within base. Returns an error if the result would be outside base.
+func SafeJoin(base, path string) (string, error) {
+	abs := filepath.Join(base, filepath.Clean("/"+path))
+	if abs != base && !strings.HasPrefix(abs, base+string(filepath.Separator)) {
+		return "", &ValidationError{Message: "path outside instance directory"}
+	}
+	return abs, nil
 }

@@ -1,7 +1,6 @@
 package api
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -20,31 +19,30 @@ type fileEntry struct {
 	Modified time.Time `json:"modified"`
 }
 
-func safeJoin(base, relPath string) (string, error) {
-	abs := filepath.Join(base, filepath.Clean("/"+relPath))
-	if abs != base && !strings.HasPrefix(abs, base+string(filepath.Separator)) {
-		return "", fmt.Errorf("path outside instance directory")
-	}
-	return abs, nil
-}
-
-func instanceBase(r *http.Request) (string, error) {
+// extractTargetPath resolves the instance base dir and jails the request's
+// ?path= query param under it. Returns base too since deleteFile and
+// uploadFile need it for extra checks beyond the target path itself.
+func extractTargetPath(r *http.Request) (basePath string, targetPath string, err error) {
+	// Instance Directory
 	id := r.PathValue("id")
-	if _, err := core.LoadInstance(id); err != nil {
-		return "", err
+	instance, loadErr := core.LoadInstance(id)
+	if loadErr != nil {
+		return "", "", loadErr
 	}
-	return core.InstanceDir(id), nil
+	basePath = core.InstanceDir(instance.ID)
+
+	// Target Path
+	targetPath, err = utils.SafeJoin(basePath, r.URL.Query().Get("path"))
+	if err != nil {
+		return "", "", err
+	}
+	return basePath, targetPath, nil
 }
 
 func listFiles(w http.ResponseWriter, r *http.Request) {
-	base, err := instanceBase(r)
+	_, target, err := extractTargetPath(r)
 	if err != nil {
 		writeError(w, err)
-		return
-	}
-	target, err := safeJoin(base, r.URL.Query().Get("path"))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -70,14 +68,9 @@ func listFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 func readFile(w http.ResponseWriter, r *http.Request) {
-	base, err := instanceBase(r)
+	_, target, err := extractTargetPath(r)
 	if err != nil {
 		writeError(w, err)
-		return
-	}
-	target, err := safeJoin(base, r.URL.Query().Get("path"))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -93,14 +86,9 @@ func readFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeFile(w http.ResponseWriter, r *http.Request) {
-	base, err := instanceBase(r)
+	_, target, err := extractTargetPath(r)
 	if err != nil {
 		writeError(w, err)
-		return
-	}
-	target, err := safeJoin(base, r.URL.Query().Get("path"))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -117,14 +105,9 @@ func writeFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func deleteFile(w http.ResponseWriter, r *http.Request) {
-	base, err := instanceBase(r)
+	base, target, err := extractTargetPath(r)
 	if err != nil {
 		writeError(w, err)
-		return
-	}
-	target, err := safeJoin(base, r.URL.Query().Get("path"))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	if target == base {
@@ -140,14 +123,9 @@ func deleteFile(w http.ResponseWriter, r *http.Request) {
 }
 
 func uploadFile(w http.ResponseWriter, r *http.Request) {
-	base, err := instanceBase(r)
+	base, destDir, err := extractTargetPath(r)
 	if err != nil {
 		writeError(w, err)
-		return
-	}
-	destDir, err := safeJoin(base, r.URL.Query().Get("path"))
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -162,9 +140,9 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	destPath, err := safeJoin(base, filepath.Join(r.URL.Query().Get("path"), header.Filename))
+	destPath, err := utils.SafeJoin(base, filepath.Join(r.URL.Query().Get("path"), header.Filename))
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		writeError(w, err)
 		return
 	}
 
