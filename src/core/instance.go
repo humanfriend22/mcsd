@@ -1,7 +1,6 @@
 package core
 
 import (
-	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -13,40 +12,23 @@ import (
 	. "mcsd/utils"
 )
 
-// InstanceStateError is the shared wire-level state value a consumer (the
-// API DTO, the CLI table writer) assigns to an instance it could not load.
-// Core itself never sets it — it is deliberately distinct from systemd's own
-// "failed" state so a consumer can tell "config unreadable" apart from
-// "process crashed". Kept here, rather than duplicated in src/api and
-// src/cli, so those two independent consumers cannot drift on the literal.
 const InstanceStateError = "error"
 
-// Instance is the master struct representing everything about a Minecraft server instance.
-// It composes the persisted config, the server.properties ports, and the live systemd state.
+// Master struct for a single server
 type Instance struct {
 	*InstanceConfig            // config.json fields (flattened via embedding)
-	Ports           Ports      `json:"ports"`           // from server.properties
-	State           string     `json:"state"`        // from systemd: "active", "inactive", "failed", etc.
-	Enabled         bool       `json:"enabled"`      // from systemd
+	Ports           Ports      `json:"ports"`        // from server.properties
+	State           string     `json:"state"`        // from systemd, InstanceStateError for internal errors
+	Enabled         bool       `json:"enabled"`
 	ActiveSince     *time.Time `json:"active_since"` // from D-Bus ActiveEnterTimestamp; nil if never active
 	MemoryUsed      int        `json:"memory_used"`  // from D-Bus MemoryCurrent (MB)
 }
 
 // LoadInstance builds a fully-populated Instance from config.json, server.properties, and systemd.
 func LoadInstance(id string) (*Instance, error) {
-	cfg, err := LoadInstanceConfig(id)
+	config, err := LoadInstanceConfig(id)
 	if err != nil {
 		return nil, err
-	}
-
-	ports, err := ReadPorts(InstanceDir(id))
-	if err != nil {
-		var notFound *NotFoundError
-		if errors.As(err, &notFound) {
-			ports = Ports{} // server.properties may not exist yet — new instance
-		} else {
-			return nil, err // real error (e.g. bad port value) — propagate
-		}
 	}
 
 	state := "inactive"
@@ -69,14 +51,21 @@ func LoadInstance(id string) (*Instance, error) {
 		}
 	}
 
-	return &Instance{
-		InstanceConfig: cfg,
-		Ports:          ports,
+	instance := Instance{
+		InstanceConfig: config,
 		State:          state,
 		Enabled:        enabled,
 		ActiveSince:    activeSince,
 		MemoryUsed:     memoryUsed,
-	}, nil
+	}
+
+	ports, err := instance.ReadPorts()
+	if err != nil {
+		return nil, err
+	}
+	instance.Ports = ports
+
+	return &instance, nil
 }
 
 // InstanceResult pairs an instance id with either its successfully loaded
@@ -155,42 +144,42 @@ func ListInstances() ([]InstanceResult, error) {
 }
 
 // Validate checks the instance config, ports, and memory budget for correctness.
-func (inst *Instance) Validate() error {
-	if err := inst.InstanceConfig.Validate(); err != nil {
+func (instance *Instance) Validate() error {
+	if err := instance.InstanceConfig.Validate(); err != nil {
 		return err
 	}
-	if err := inst.Ports.Validate(); err != nil {
+	if err := instance.Ports.Validate(); err != nil {
 		return err
 	}
-	return CheckMemoryBudget(inst.ID, inst.Memory)
+	return CheckMemoryBudget(instance.ID, instance.Memory)
 }
 
 // Create provisions a new instance: writes config.json, server.properties, eula.txt.
-func (inst *Instance) Create(ports Ports) error {
-	if err := ValidateIDUnique(inst.ID); err != nil {
+func (instance *Instance) Create(ports Ports) error {
+	if err := ValidateIDUnique(instance.ID); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(InstanceDir(inst.ID), 0750); err != nil {
-		return &ServerError{Message: fmt.Sprintf("create instance dir: %s", err.Error())}
+	if err := os.MkdirAll(InstanceDir(instance.ID), 0750); err != nil {
+		return &InternalError{Message: fmt.Sprintf("create instance dir: %s", err.Error())}
 	}
 
 	var provisionErr error
 	defer func() {
 		if provisionErr != nil {
-			_ = os.RemoveAll(InstanceDir(inst.ID))
+			_ = os.RemoveAll(InstanceDir(instance.ID))
 		}
 	}()
 
-	if provisionErr = WriteInstanceConfig(inst.ID, inst.InstanceConfig); provisionErr != nil {
-		return &ServerError{Message: fmt.Sprintf("write instance config: %s", provisionErr.Error())}
+	if provisionErr = WriteInstanceConfig(instance.ID, instance.InstanceConfig); provisionErr != nil {
+		return &InternalError{Message: fmt.Sprintf("write instance config: %s", provisionErr.Error())}
 	}
 
-	if provisionErr = WriteServerProperties(InstanceDir(inst.ID), ports); provisionErr != nil {
-		return &ServerError{Message: fmt.Sprintf("write server.properties: %s", provisionErr.Error())}
+	if provisionErr = instance.WritePorts(ports); provisionErr != nil {
+		return &InternalError{Message: fmt.Sprintf("write ports to server.properties: %s", provisionErr.Error())}
 	}
 
-	if provisionErr = WriteAtomic(InstanceDir(inst.ID)+"/eula.txt", []byte("eula=true\n"), 0640); provisionErr != nil {
-		return &ServerError{Message: fmt.Sprintf("write eula.txt: %s", provisionErr.Error())}
+	if provisionErr = WriteFile(InstanceDir(instance.ID)+"/eula.txt", []byte("eula=true\n"), 0640); provisionErr != nil {
+		return &InternalError{Message: fmt.Sprintf("write eula.txt: %s", provisionErr.Error())}
 	}
 
 	return nil
@@ -200,7 +189,7 @@ func (inst *Instance) Create(ports Ports) error {
 // Used by orphan cleanup which may not have a full Instance.
 func DeleteInstance(id string) error {
 	if SDManager == nil {
-		return &ServerError{Message: "systemd not initialized"}
+		return &InternalError{Message: "systemd not initialized"}
 	}
 
 	// Reset failed state while unit is still loaded.
@@ -215,22 +204,22 @@ func DeleteInstance(id string) error {
 
 	if _, err := os.Stat(InstanceDir(id)); !os.IsNotExist(err) {
 		if err := os.RemoveAll(InstanceDir(id)); err != nil {
-			return &ServerError{Message: fmt.Sprintf("remove instance dir: %s", err.Error())}
+			return &InternalError{Message: fmt.Sprintf("remove instance dir: %s", err.Error())}
 		}
 	}
 	return SDManager.Reload()
 }
 
 // Download fetches the server JAR to the instance directory.
-func (inst *Instance) Download(url string) error {
-	executable := vendors.Executable(inst.Vendor)
-	return vendors.DownloadFile(InstanceDir(inst.ID)+"/"+executable, url)
+func (instance *Instance) Download(url string) error {
+	executable := vendors.Executable(instance.Vendor)
+	return vendors.DownloadFile(InstanceDir(instance.ID)+"/"+executable, url)
 }
 
-func (inst *Instance) Upgrade(v vendors.Vendor, version string, build int) error {
-	status, err := SDManager.Status(inst.ID)
+func (instance *Instance) Upgrade(v vendors.Vendor, version string, build int) error {
+	status, err := SDManager.Status(instance.ID)
 	if err != nil {
-		return &ServerError{Message: fmt.Sprintf("check status: %s", err.Error())}
+		return &InternalError{Message: fmt.Sprintf("check status: %s", err.Error())}
 	}
 	if status.State == "active" {
 		return &ValidationError{Message: "server must be stopped before upgrading"}
@@ -238,28 +227,25 @@ func (inst *Instance) Upgrade(v vendors.Vendor, version string, build int) error
 
 	downloadURL, err := v.DownloadURL(version, build)
 	if err != nil {
-		return &ServerError{Message: fmt.Sprintf("resolve download URL: %s", err.Error())}
+		return &InternalError{Message: fmt.Sprintf("resolve download URL: %s", err.Error())}
 	}
-	if err := inst.Download(downloadURL); err != nil {
-		return &ServerError{Message: fmt.Sprintf("download: %s", err.Error())}
+	if err := instance.Download(downloadURL); err != nil {
+		return &InternalError{Message: fmt.Sprintf("download: %s", err.Error())}
 	}
 
-	inst.Vendor = v.Name()
-	inst.Version = version
-	inst.Build = build
-	if err := WriteInstanceConfig(inst.ID, inst.InstanceConfig); err != nil {
-		return &ServerError{Message: fmt.Sprintf("write instance config: %s", err.Error())}
+	instance.Vendor = v.Name()
+	instance.Version = version
+	instance.Build = build
+	if err := WriteInstanceConfig(instance.ID, instance.InstanceConfig); err != nil {
+		return &InternalError{Message: fmt.Sprintf("write instance config: %s", err.Error())}
 	}
 	return nil
 }
 
 // EnsureStartReady checks that the instance can start (port availability + memory budget).
-func (inst *Instance) EnsureStartReady() error {
-	ports, err := ReadPorts(InstanceDir(inst.ID))
+func (instance *Instance) EnsureStartReady() error {
+	ports, err := instance.ReadPorts()
 	if err != nil {
-		// Return ReadPorts' error unchanged (not rewrapped into a generic
-		// ServerError) so errors.As in src/api/api.go still classifies a
-		// corrupt port value as a ValidationError (400), not a 500 (D-05/D-06).
 		return err
 	}
 	if err := checkPortAvailable(ports.Game); err != nil {
@@ -268,57 +254,57 @@ func (inst *Instance) EnsureStartReady() error {
 	if err := checkPortAvailable(ports.RCON); err != nil {
 		return &ValidationError{Message: fmt.Sprintf("RCON port: %s", err.Error())}
 	}
-	if err := CheckMemoryBudget(inst.ID, inst.Memory); err != nil {
+	if err := CheckMemoryBudget(instance.ID, instance.Memory); err != nil {
 		return err
 	}
 	return nil
 }
 
 // Start validates readiness then starts the instance via systemd.
-func (inst *Instance) Start() error {
-	if err := inst.EnsureStartReady(); err != nil {
+func (instance *Instance) Start() error {
+	if err := instance.EnsureStartReady(); err != nil {
 		return err
 	}
-	return SDManager.Start(inst.ID)
+	return SDManager.Start(instance.ID)
 }
 
 // Stop stops the instance via systemd.
-func (inst *Instance) Stop() error {
-	return SDManager.Stop(inst.ID)
+func (instance *Instance) Stop() error {
+	return SDManager.Stop(instance.ID)
 }
 
 // Restart restarts the instance via systemd.
-func (inst *Instance) Restart() error {
-	return SDManager.Restart(inst.ID)
+func (instance *Instance) Restart() error {
+	return SDManager.Restart(instance.ID)
 }
 
 // Status returns the current systemd service status.
-func (inst *Instance) Status() (*ServiceStatus, error) {
-	return SDManager.Status(inst.ID)
+func (instance *Instance) Status() (*ServiceStatus, error) {
+	return SDManager.Status(instance.ID)
 }
 
 // Enable enables the instance to start on boot, checking memory budget first.
-func (inst *Instance) Enable() error {
-	if err := CheckEnableBudget(inst.ID, inst.Memory); err != nil {
+func (instance *Instance) Enable() error {
+	if err := CheckEnableBudget(instance.ID, instance.Memory); err != nil {
 		return err
 	}
-	if err := SDManager.Enable(inst.ID); err != nil {
+	if err := SDManager.Enable(instance.ID); err != nil {
 		return &ValidationError{Message: fmt.Sprintf("enable failed: %s", err.Error())}
 	}
 	return SDManager.Reload()
 }
 
 // Disable disables the instance from starting on boot.
-func (inst *Instance) Disable() error {
-	if err := SDManager.Disable(inst.ID); err != nil {
+func (instance *Instance) Disable() error {
+	if err := SDManager.Disable(instance.ID); err != nil {
 		return err
 	}
 	return SDManager.Reload()
 }
 
 // RCON sends a command to the running server via the RCON protocol.
-func (inst *Instance) RCON(cmd string) (string, error) {
-	ports, err := ReadPorts(InstanceDir(inst.ID))
+func (instance *Instance) RCON(cmd string) (string, error) {
+	ports, err := instance.ReadPorts()
 	if err != nil {
 		return "", err
 	}
@@ -341,40 +327,40 @@ type PatchRequest struct {
 	RCONPassword *string  `json:"rcon_password"`
 }
 
-func (inst *Instance) Patch(req PatchRequest) error {
+func (instance *Instance) Patch(req PatchRequest) error {
 	if req.Name != nil {
-		inst.Name = *req.Name
+		instance.Name = *req.Name
 	}
 	if req.Binary != nil {
-		inst.Binary = *req.Binary
+		instance.Binary = *req.Binary
 	}
 	if req.JavaArgs != nil {
-		inst.JavaArgs = req.JavaArgs
+		instance.JavaArgs = req.JavaArgs
 	}
 	if req.ServerArgs != nil {
-		inst.ServerArgs = req.ServerArgs
+		instance.ServerArgs = req.ServerArgs
 	}
 	if req.Memory != nil {
-		inst.Memory = *req.Memory
+		instance.Memory = *req.Memory
 	}
 
-	if err := inst.Validate(); err != nil {
+	if err := instance.Validate(); err != nil {
 		return err
 	}
-	if err := WriteInstanceConfig(inst.ID, inst.InstanceConfig); err != nil {
-		return &ServerError{Message: fmt.Sprintf("write instance config: %s", err.Error())}
+	if err := WriteInstanceConfig(instance.ID, instance.InstanceConfig); err != nil {
+		return &InternalError{Message: fmt.Sprintf("write instance config: %s", err.Error())}
 	}
 
 	if req.GamePort != nil || req.RCONPort != nil || req.RCONPassword != nil {
-		status, err := SDManager.Status(inst.ID)
+		status, err := SDManager.Status(instance.ID)
 		if err != nil {
-			return &ServerError{Message: fmt.Sprintf("check status: %s", err.Error())}
+			return &InternalError{Message: fmt.Sprintf("check status: %s", err.Error())}
 		}
 		if status.State == "active" {
 			return &ValidationError{Message: "stop the server before changing ports"}
 		}
 
-		ports := inst.Ports
+		ports := instance.Ports
 		if req.GamePort != nil {
 			ports.Game = *req.GamePort
 		}
@@ -393,8 +379,8 @@ func (inst *Instance) Patch(req PatchRequest) error {
 		if err := checkPortAvailable(ports.RCON); err != nil {
 			return err
 		}
-		if err := WriteServerProperties(InstanceDir(inst.ID), ports); err != nil {
-			return &ServerError{Message: fmt.Sprintf("write server.properties: %s", err.Error())}
+		if err := instance.WritePorts(ports); err != nil {
+			return &InternalError{Message: fmt.Sprintf("write server.properties: %s", err.Error())}
 		}
 	}
 
