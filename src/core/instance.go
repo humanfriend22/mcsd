@@ -249,11 +249,6 @@ func (instance *Instance) Restart() error {
 	return SDManager.Restart(instance.ID)
 }
 
-// Status returns the current systemd service status.
-func (instance *Instance) Status() (*ServiceStatus, error) {
-	return SDManager.Status(instance.ID)
-}
-
 // Enable enables the instance to start on boot, checking memory budget first.
 func (instance *Instance) Enable() error {
 	if err := CheckEnableBudget(instance.ID, instance.Memory); err != nil {
