@@ -5,23 +5,17 @@ import (
 	"log"
 	"os"
 	"sync"
-	"time"
 
 	"mcsd/vendors"
 
 	. "mcsd/utils"
 )
 
-const InstanceStateError = "error"
-
 // Master struct for a single server
 type Instance struct {
-	*InstanceConfig            // config.json fields (flattened via embedding)
-	Ports           Ports      `json:"ports"`        // from server.properties
-	State           string     `json:"state"`        // from systemd, InstanceStateError for internal errors
-	Enabled         bool       `json:"enabled"`
-	ActiveSince     *time.Time `json:"active_since"` // from D-Bus ActiveEnterTimestamp; nil if never active
-	MemoryUsed      int        `json:"memory_used"`  // from D-Bus MemoryCurrent (MB)
+	*InstanceConfig       // config.json fields (flattened via embedding)
+	Ports           Ports `json:"ports"` // from server.properties
+	InstanceState         // live systemd state (flattened via embedding)
 }
 
 // LoadInstance builds a fully-populated Instance from config.json, server.properties, and systemd.
@@ -31,32 +25,9 @@ func LoadInstance(id string) (*Instance, error) {
 		return nil, err
 	}
 
-	state := "inactive"
-	var enabled bool
-	var activeSince *time.Time
-	var memoryUsed int
-
-	if SDManager != nil {
-		status, err := SDManager.Status(id)
-		if err == nil {
-			state = status.State
-		}
-		enabled = SDManager.IsEnabled(id)
-
-		if since, memMB, err := SDManager.ActiveStats(id); err == nil {
-			if !since.IsZero() {
-				activeSince = &since
-			}
-			memoryUsed = memMB
-		}
-	}
-
 	instance := Instance{
 		InstanceConfig: config,
-		State:          state,
-		Enabled:        enabled,
-		ActiveSince:    activeSince,
-		MemoryUsed:     memoryUsed,
+		InstanceState:  loadInstanceState(id),
 	}
 
 	ports, err := instance.ReadPorts()

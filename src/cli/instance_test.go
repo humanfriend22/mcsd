@@ -19,7 +19,7 @@ func TestWriteInstanceTableMixed(t *testing.T) {
 			ID: "healthy-one",
 			Instance: &core.Instance{
 				InstanceConfig: &core.InstanceConfig{ID: "healthy-one", Name: "healthy-one"},
-				State:          "active",
+				InstanceState:  core.InstanceState{State: "active"},
 			},
 		},
 		{

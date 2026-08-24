@@ -26,7 +26,7 @@ func newDegradedInstance(id string, err error) degradedInstance {
 	return degradedInstance{
 		Instance: &core.Instance{
 			InstanceConfig: &core.InstanceConfig{ID: id, Name: id},
-			State:          core.InstanceStateError,
+			InstanceState:  core.InstanceState{State: core.InstanceStateError},
 		},
 		Error: err.Error(),
 	}
