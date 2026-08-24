@@ -1,13 +1,15 @@
-// Package-internal split: systemd.go is the D-Bus connection lifecycle and
-// unit-command surface — opening/closing the connection, naming units, and
-// issuing the mutating commands (Start/Stop/Restart/Enable/Disable/
-// ResetFailed/Reload). Live-state reads live in state.go.
+// systemd.go: all systemd/D-Bus methods for sdManager — connection
+// lifecycle, unit naming, mutating commands (Start/Stop/Restart/Enable/
+// Disable/ResetFailed/Reload), and state queries (Status/IsEnabled/
+// ActiveStats/ActiveSince/List). state.go holds the InstanceState value
+// type these queries assemble into and the Instance-level accessor.
 package core
 
 import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/coreos/go-systemd/v22/dbus"
 	godbus "github.com/godbus/dbus/v5"
@@ -22,6 +24,14 @@ var SDManager *sdManager // initialized once per process by InitSDManager
 type sdManager struct {
 	conn   *dbus.Conn
 	rawBus *godbus.Conn
+}
+
+// ServiceStatus is the value produced by a systemd unit status query.
+type ServiceStatus struct {
+	Name        string
+	State       string // active, inactive, failed, activating, deactivating
+	SubState    string // running, dead, exited, failed, ...
+	Description string
 }
 
 // InitSDManager opens the D-Bus connection to systemd.
@@ -138,4 +148,99 @@ func (s *sdManager) Reload() error {
 		return &InternalError{Message: fmt.Sprintf("reload systemd: %s", err.Error())}
 	}
 	return nil
+}
+
+// Status returns the current service status for the given instance ID.
+// If id is empty, returns status of mcsd.service.
+func (s *sdManager) Status(id string) (*ServiceStatus, error) {
+	unit := UnitName(id)
+	statuses, err := s.conn.ListUnitsByNamesContext(bgCtx, []string{unit})
+	if err != nil {
+		return nil, &InternalError{Message: fmt.Sprintf("status %s: systemd status failed: %s", id, err.Error())}
+	}
+	if len(statuses) == 0 {
+		return &ServiceStatus{Name: unit, State: "inactive", SubState: "dead"}, nil
+	}
+	status := statuses[0]
+	return &ServiceStatus{
+		Name:        unit,
+		State:       status.ActiveState,
+		SubState:    status.SubState,
+		Description: status.Description,
+	}, nil
+}
+
+// IsEnabled returns whether the unit for the given instance ID is enabled at boot.
+// If id is empty, checks mcsd.service.
+// Calls GetUnitFileState via raw D-Bus, which works for template instances unlike
+// ListUnitFilesByPatterns.
+func (s *sdManager) IsEnabled(id string) bool {
+	unit := UnitName(id)
+	var state string
+	obj := s.rawBus.Object("org.freedesktop.systemd1", "/org/freedesktop/systemd1")
+	err := obj.Call("org.freedesktop.systemd1.Manager.GetUnitFileState", 0, unit).Store(&state)
+	if err != nil {
+		return false
+	}
+	return state == "enabled"
+}
+
+// ActiveStats returns the active-enter timestamp and memory usage (MB) for the given unit.
+func (s *sdManager) ActiveStats(id string) (activeSince time.Time, memoryMB int, err error) {
+	unitName := UnitName(id)
+
+	// Unit-level properties
+	props, err := s.conn.GetUnitPropertiesContext(bgCtx, unitName)
+	if err != nil {
+		return time.Time{}, 0, &InternalError{Message: fmt.Sprintf("active stats %s: unit properties failed: %s", id, err.Error())}
+	}
+	if ts, ok := props["ActiveEnterTimestamp"].(uint64); ok && ts > 0 {
+		activeSince = time.UnixMicro(int64(ts))
+	}
+
+	// Service-level properties (MemoryCurrent lives on org.freedesktop.systemd1.Service)
+	svcProps, err := s.conn.GetUnitTypePropertiesContext(bgCtx, unitName, "Service")
+	if err == nil {
+		if v, ok := svcProps["MemoryCurrent"].(uint64); ok && v != ^uint64(0) {
+			memoryMB = int(v / (1024 * 1024))
+		}
+	}
+
+	return activeSince, memoryMB, nil
+}
+
+// ActiveSince returns when the unit last entered the active state.
+// Returns zero time if the unit is not currently active.
+func (s *sdManager) ActiveSince(id string) (time.Time, error) {
+	props, err := s.conn.GetUnitPropertiesContext(bgCtx, UnitName(id))
+	if err != nil {
+		return time.Time{}, &InternalError{Message: fmt.Sprintf("active since %s: systemd properties failed: %s", id, err.Error())}
+	}
+	timestamp, ok := props["ActiveEnterTimestamp"]
+	if !ok {
+		return time.Time{}, nil
+	}
+	microseconds, ok := timestamp.(uint64)
+	if !ok || microseconds == 0 {
+		return time.Time{}, nil
+	}
+	return time.UnixMicro(int64(microseconds)), nil
+}
+
+// List returns all units matching the given glob pattern.
+func (s *sdManager) List(pattern string) ([]*ServiceStatus, error) {
+	units, err := s.conn.ListUnitsByPatternsContext(bgCtx, nil, []string{pattern})
+	if err != nil {
+		return nil, &InternalError{Message: fmt.Sprintf("list %s: systemd list failed: %s", pattern, err.Error())}
+	}
+	statuses := make([]*ServiceStatus, 0, len(units))
+	for _, unit := range units {
+		statuses = append(statuses, &ServiceStatus{
+			Name:        unit.Name,
+			State:       unit.ActiveState,
+			SubState:    unit.SubState,
+			Description: unit.Description,
+		})
+	}
+	return statuses, nil
 }
