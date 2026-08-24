@@ -11,6 +11,14 @@ import (
 	. "mcsd/utils"
 )
 
+// DefaultBasePath is where per-instance directories live on the host.
+const DefaultBasePath = "/srv/mcsd/instances"
+
+// InstanceDir returns the on-disk directory for the given instance ID.
+func InstanceDir(id string) string {
+	return filepath.Join(DefaultBasePath, id)
+}
+
 // InstanceConfig is the JSON schema for config.json in each instance directory.
 // It is a pure data definition with no lifecycle methods.
 type InstanceConfig struct {
@@ -18,38 +26,46 @@ type InstanceConfig struct {
 	Name       string   `json:"name"`
 	Vendor     string   `json:"vendor"`
 	Version    string   `json:"version"`
-	Build      int      `json:"build,omitempty"`
+	Build      int      `json:"build"`
 	Binary     string   `json:"binary"`
 	JavaArgs   []string `json:"java_args"`
 	ServerArgs []string `json:"server_args"`
 	Memory     int      `json:"memory"`
 }
 
+// MinMemoryMB is the minimum RAM, in megabytes, an instance may be allocated.
+// CLI wizards reuse this so the client-side check can't drift from this
+// authoritative floor.
+const MinMemoryMB = 512
+
 func (c *InstanceConfig) Validate() error {
 	if !vendors.IsValid(c.Vendor) {
 		return &ValidationError{Message: fmt.Sprintf("unknown vendor %q", c.Vendor)}
 	}
-	if c.Memory < 512 {
-		return &ValidationError{Message: fmt.Sprintf("memory must be at least 512 MB, got %d", c.Memory)}
+	if c.Memory < MinMemoryMB {
+		return &ValidationError{Message: fmt.Sprintf("memory must be at least %d MB, got %d", MinMemoryMB, c.Memory)}
 	}
 	return nil
 }
 
-// LoadInstanceConfig reads config.json from an instance directory.
+// LoadInstanceConfig reads config.json from an instance directory, rejecting a malformed or traversal-shaped id before touching the filesystem.
 func LoadInstanceConfig(id string) (*InstanceConfig, error) {
+	if err := ValidateID(id); err != nil {
+		return nil, &ValidationError{Message: err.Error()}
+	}
 	path := filepath.Join(InstanceDir(id), "config.json")
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, &NotFoundError{Message: fmt.Sprintf("instance %q not found", id)}
 		}
-		return nil, &ServerError{Message: fmt.Sprintf("open instance config: %s", err.Error())}
+		return nil, &InternalError{Message: fmt.Sprintf("open instance config: %s", err.Error())}
 	}
 	defer f.Close()
 
 	var cfg InstanceConfig
 	if err := json.NewDecoder(f).Decode(&cfg); err != nil {
-		return nil, &ServerError{Message: fmt.Sprintf("decode instance config: %s", err.Error())}
+		return nil, &InternalError{Message: fmt.Sprintf("decode instance config: %s", err.Error())}
 	}
 	if cfg.ID == "" {
 		cfg.ID = id
@@ -64,14 +80,14 @@ func LoadInstanceConfig(id string) (*InstanceConfig, error) {
 func WriteInstanceConfig(id string, cfg *InstanceConfig) error {
 	dir := InstanceDir(id)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return &ServerError{Message: fmt.Sprintf("create instance dir: %s", err.Error())}
+		return &InternalError{Message: fmt.Sprintf("create instance dir: %s", err.Error())}
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
-		return &ServerError{Message: fmt.Sprintf("encode instance config: %s", err.Error())}
+		return &InternalError{Message: fmt.Sprintf("encode instance config: %s", err.Error())}
 	}
-	if err := WriteAtomic(filepath.Join(dir, "config.json"), append(data, '\n'), 0644); err != nil {
-		return &ServerError{Message: fmt.Sprintf("write instance config: %s", err.Error())}
+	if err := WriteFile(filepath.Join(dir, "config.json"), append(data, '\n'), 0644); err != nil {
+		return &InternalError{Message: fmt.Sprintf("write instance config: %s", err.Error())}
 	}
 	return nil
 }
@@ -83,7 +99,7 @@ func ListInstanceConfigs() ([]string, error) {
 		if os.IsNotExist(err) {
 			return []string{}, nil
 		}
-		return nil, &ServerError{Message: fmt.Sprintf("read instances dir: %s", err.Error())}
+		return nil, &InternalError{Message: fmt.Sprintf("read instances dir: %s", err.Error())}
 	}
 
 	names := []string{}
@@ -91,7 +107,7 @@ func ListInstanceConfigs() ([]string, error) {
 		if !entry.IsDir() {
 			continue
 		}
-		configPath := filepath.Join(DefaultBasePath, entry.Name(), "config.json")
+		configPath := filepath.Join(InstanceDir(entry.Name()), "config.json")
 		if _, err := os.Stat(configPath); err == nil {
 			names = append(names, entry.Name())
 		}
@@ -107,7 +123,7 @@ func ValidateIDUnique(id string) error {
 	if _, err := os.Stat(InstanceDir(id)); err == nil {
 		return &ValidationError{Message: fmt.Sprintf("instance %q already exists", id)}
 	} else if !os.IsNotExist(err) {
-		return &ServerError{Message: fmt.Sprintf("check instance dir: %s", err.Error())}
+		return &InternalError{Message: fmt.Sprintf("check instance dir: %s", err.Error())}
 	}
 	return nil
 }
