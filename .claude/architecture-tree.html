@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>MCSD — Code Interaction Tree</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --border: #2a2e38;
+    --text: #d8dee9;
+    --dim: #7b8394;
+    --accent: #7aa2f7;
+    --accent2: #9ece6a;
+    --accent3: #e0af68;
+    --accent4: #bb9af7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    padding: 2rem;
+    line-height: 1.5;
+    max-width: 980px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 1.3rem;
+    color: var(--accent);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.6rem;
+    margin-bottom: 0.3rem;
+  }
+  .sub { color: var(--dim); font-size: 0.85rem; margin-bottom: 1.5rem; }
+  .flow {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.9rem 1.1rem;
+    margin-bottom: 1.5rem;
+    font-size: 0.85rem;
+  }
+  .flow div { margin: 0.25rem 0; }
+  .arrow { color: var(--accent3); }
+  section {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.3rem;
+    margin-bottom: 1.2rem;
+  }
+  section h2 {
+    font-size: 0.95rem;
+    margin: 0 0 0.6rem 0;
+    color: var(--accent2);
+  }
+  pre {
+    margin: 0;
+    white-space: pre-wrap;
+    font-size: 0.85rem;
+  }
+  .layer-cli   { color: var(--accent3); }
+  .layer-api   { color: var(--accent); }
+  .layer-core  { color: var(--accent2); }
+  .layer-web   { color: var(--accent4); }
+  .rule {
+    border-left: 3px solid var(--accent3);
+    padding: 0.6rem 1rem;
+    background: #1c1710;
+    border-radius: 0 6px 6px 0;
+    font-size: 0.85rem;
+    margin-top: 1rem;
+  }
+</style>
+</head>
+<body>
+
+<h1>MCSD — Code Interaction Tree</h1>
+<div class="sub">Go daemon (core + api + cli) + Vue/Nuxt frontend. Generated overview of how pieces call each other.</div>
+
+<div class="flow">
+  <div><span class="arrow">browser</span> → web/services/api.ts (fetch) → <span class="layer-api">api/*.go</span> (HTTP) → <span class="layer-core">core/*.go</span> (logic) → systemd D-Bus / filesystem</div>
+  <div><span class="arrow">terminal</span> → <span class="layer-cli">cli/*.go</span> → <span class="layer-core">core/*.go</span> → systemd D-Bus / filesystem &nbsp;<span style="color:var(--dim)">(bypasses api/web entirely)</span></div>
+</div>
+
+<section>
+<h2>Entry point</h2>
+<pre>main.go
+ └─ cli.Execute()
+     ├─ core.InitSDManager()  (D-Bus, boot)
+     ├─ <span class="layer-cli">cli/*.go</span> (create, edit, instance, upgrade, console, daemon, init, deinit, systemd)
+     │    └─ <span class="layer-core">core/*</span>  (all instance ops — same core CLI+API both use)
+     └─ daemon.go → api.Serve(8080)
+          └─ src/web/web.go (embed+serve Nuxt SPA build)</pre>
+</section>
+
+<section>
+<h2 class="layer-api">api/ — HTTP layer</h2>
+<pre> ├─ api.go       — router, error→status mapping
+ ├─ instances.go — CRUD + start/stop/enable/disable
+ ├─ files.go     — file browser endpoints
+ ├─ logs.go      — chunked log stream
+ ├─ rcon.go      — RCON exec endpoint
+ ├─ vitals.go / snapshot.go — host resource metrics
+ ├─ cache.go     — bg goroutine, refresh instance list every 2-5s
+ └─ init.go / ready.go — bootstrap/health
+        all → <span class="layer-core">core/*</span>  (no cross-talk to cli/)</pre>
+</section>
+
+<section>
+<h2 class="layer-core">core/ — shared brain (cli + api both depend on this, nothing depends back)</h2>
+<pre> ├─ core.go            — init/deinit host, global config
+ ├─ instance.go        — lifecycle: launch/stop/download/upgrade
+ ├─ instance_model.go  — merges config+ports+systemd state → Instance struct
+ ├─ instance_config.go — persist config.json per instance
+ ├─ ports.go           — server.properties parse/validate
+ ├─ systemd.go         — D-Bus: SDManager singleton, unit control+status
+ ├─ rcon.go            — Minecraft RCON protocol
+ ├─ java.go            — java binary discovery
+ ├─ memory.go          — mem budget calc
+ ├─ vitals.go          — CPU/RAM/disk read
+ └─ config.go          — global config.json
+        └─ vendors/ (fabric.go, paper.go via vendors.go registry+interface)
+        └─ utils/errors.go (ValidationError / NotFoundError / ServerError)</pre>
+</section>
+
+<section>
+<h2 class="layer-web">web/ — Vue/Nuxt SPA (talks only to api/ over HTTP)</h2>
+<pre> pages/
+  ├─ index.vue            → ServerCard.vue list
+  └─ instances/[id].vue   → InstanceHeader, tabs (Overview/Settings), LogViewer, FileBrowser
+ components/ → StatusDot, InstanceStatCard used inside tabs
+ services/api.ts   — fetch wrapper, all HTTP calls
+ services/error.ts — error normalize
+ utils/format.ts, merge.ts — helpers</pre>
+</section>
+
+<div class="rule">
+<b>Enforced rule:</b> cli/ and api/ both depend on core/, never on each other.
+Keeps the CLI a fully standalone, reliable alternative to the web UI.
+</div>
+
+</body>
+</html>
