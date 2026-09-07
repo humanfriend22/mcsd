@@ -14,9 +14,9 @@ type NotFoundError struct {
 
 func (e *NotFoundError) Error() string { return e.Message }
 
-// ServerError represents a server-side failure (filesystem, D-Bus, network, /proc, etc.).
-type ServerError struct {
+// InternalError represents a server-side failure (filesystem, D-Bus, network, /proc, etc.).
+type InternalError struct {
 	Message string
 }
 
-func (e *ServerError) Error() string { return e.Message }
+func (e *InternalError) Error() string { return e.Message }

@@ -1,163 +1,45 @@
 package core
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
-	"strings"
 
 	. "mcsd/utils"
 )
 
 type JavaBinary struct {
-	Path    string `json:"path"`
-	Version string `json:"version"`
-	Vendor  string `json:"vendor"`
+	Description string `json:"description"`
+	Path    	string `json:"path"`
 }
 
 func DiscoverJavaBinaries() []JavaBinary {
-	seen := make(map[string]bool)
-	var results []javaCandidate
+	candidates := make([]string, 0)
 
-	// On Linux/macOS, split PATH. On Windows, split by ';' and also check common locations.
-	paths := filepath.SplitList(os.Getenv("PATH"))
-	if runtime.GOOS == "windows" {
-		for _, dir := range []string{
-			filepath.Join(os.Getenv("JAVA_HOME"), "bin"),
-			`C:\Program Files\Java`,
-			`C:\Program Files (x86)\Java`,
-		} {
-			if dir != "" && dir != `\bin` {
-				paths = append(paths, dir)
-			}
-		}
+	// Search the PATH
+	path, err := exec.LookPath("java")
+	if err == nil {
+		candidates = append(candidates, path)
 	}
 
-	// Also check JAVA_HOME
-	if home := os.Getenv("JAVA_HOME"); home != "" {
-		binDir := filepath.Join(home, "bin")
-		paths = append([]string{binDir}, paths...)
-	}
+	// TODO:
+	// - Add in /usr/libexec/java_home for darwin
+	// - Homebrew, SDKMAN, Mise, etc if possible
+	// - Local MCSD only installations as well?
 
-	for _, dir := range paths {
-		entries, err := os.ReadDir(dir)
+	binaries := make([]JavaBinary, 0)
+
+	for _, path := range candidates {
+		binary, err := ValidateJavaBinary(path)
 		if err != nil {
+			fmt.Println(err)
 			continue
 		}
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			name := entry.Name()
-			// Match "java", "java-17", "java-21-openjdk", etc. but not "javac", "javadoc", etc.
-			if !isJavaBinaryName(name) {
-				continue
-			}
-			abs := filepath.Join(dir, name)
-			resolved, err := filepath.EvalSymlinks(abs)
-			if err != nil {
-				resolved = abs
-			}
-			if seen[resolved] {
-				continue
-			}
-			seen[resolved] = true
-			results = append(results, javaCandidate{path: abs, resolved: resolved})
-		}
+		binaries = append(binaries, *binary)
 	}
 
-	var binaries []JavaBinary
-	for _, c := range results {
-		bin := probeJavaBinary(c.path)
-		if bin != nil {
-			binaries = append(binaries, *bin)
-		}
-	}
 	return binaries
-}
-
-type javaCandidate struct {
-	path     string
-	resolved string
-}
-
-func isJavaBinaryName(name string) bool {
-	name = strings.ToLower(name)
-	if name == "java" {
-		return true
-	}
-	// Match java-17, java-21, java-21-openjdk, java-17.0.1, etc.
-	if strings.HasPrefix(name, "java-") || strings.HasPrefix(name, "java.") {
-		// Must not end with common non-executable suffixes
-		suffixes := []string{".exe", ".sh", ".bat", ".cmd", ".dll", ".so", ".dylib", ".class", ".jar", ".jnilib"}
-		for _, s := range suffixes {
-			if strings.HasSuffix(name, s) {
-				return false
-			}
-		}
-		return true
-	}
-	return false
-}
-
-func probeJavaBinary(path string) *JavaBinary {
-	cmd := exec.Command(path, "-version")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil
-	}
-	return parseJavaVersion(path, string(out))
-}
-
-func parseJavaVersion(path, output string) *JavaBinary {
-	// Typical output: openjdk version "21.0.1" 2024-01-16 LTS
-	// or: java version "17.0.1" 2021-10-19
-	// or: Java(TM) SE Runtime Environment (build 21.0.1+13-LTS-58)
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	if len(lines) == 0 {
-		return nil
-	}
-	first := lines[0]
-
-	vendor := "Unknown"
-	version := ""
-
-	// Parse vendor from first line
-	lower := strings.ToLower(first)
-	switch {
-	case strings.Contains(lower, "openjdk"):
-		vendor = "OpenJDK"
-	case strings.Contains(lower, "java(TM)"):
-		vendor = "Oracle JDK"
-	case strings.Contains(lower, "graalvm"):
-		vendor = "GraalVM"
-	case strings.Contains(lower, "amazon"):
-		vendor = "Amazon Corretto"
-	case strings.Contains(lower, "temurin") || strings.Contains(lower, "adoptium"):
-		vendor = "Eclipse Temurin"
-	case strings.Contains(lower, "zulu"):
-		vendor = "Azul Zulu"
-	case strings.Contains(lower, "dragonwell"):
-		vendor = "Alibaba Dragonwell"
-	case strings.Contains(lower, "semeru") || strings.Contains(lower, "openj9"):
-		vendor = "IBM Semeru"
-	}
-
-	// Extract version string between quotes
-	if idx := strings.Index(first, `"`); idx >= 0 {
-		rest := first[idx+1:]
-		if end := strings.Index(rest, `"`); end >= 0 {
-			version = rest[:end]
-		}
-	}
-
-	return &JavaBinary{
-		Path:    path,
-		Version: version,
-		Vendor:  vendor,
-	}
 }
 
 func ValidateBinary(path string) error {
@@ -171,7 +53,27 @@ func ValidateBinary(path string) error {
 	if info.IsDir() {
 		return &ValidationError{Message: fmt.Sprintf("path is a directory, not a binary: %s", path)}
 	}
+	if info.Mode()&0111 == 0 {
+		return &ValidationError{Message: fmt.Sprintf("binary is not executable: %s", path)}
+	}
 	return nil
+}
+
+func ValidateJavaBinary(path string) (*JavaBinary, error) {
+	if err := ValidateBinary(path); err != nil {
+		return nil, err
+	}
+
+	cmd := exec.Command(path, "-version")
+	data, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("error parsing %s:%s\n", path, err)
+		return nil, &InternalError{Message: fmt.Sprintf("error parsing %s:%s\n", path, err)}
+	}
+	line, _, _ := bytes.Cut(data, []byte("\n"))
+	description := string(bytes.TrimSpace(line))
+	binary := JavaBinary{Description: description, Path: path}
+	return &binary, nil
 }
 
 var AikarFlags = []string{
@@ -195,19 +97,4 @@ var AikarFlags = []string{
 	"-XX:MaxTenuringThreshold=1",
 	"-Dusing.aikars.flags=https://mcflags.emc.gs",
 	"-Daikars.new.flags=true",
-}
-
-func ValidateJavaBinary(path string) error {
-	if err := ValidateBinary(path); err != nil {
-		return err
-	}
-	cmd := exec.Command(path, "-version")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return &ValidationError{Message: fmt.Sprintf("not a valid java binary: %s", err.Error())}
-	}
-	if parseJavaVersion(path, string(out)) == nil {
-		return &ValidationError{Message: fmt.Sprintf("could not parse java version output from %s", path)}
-	}
-	return nil
 }

@@ -4,50 +4,39 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"mcsd/core"
+	. "mcsd/core"
 	"mcsd/vendors"
 )
-
-// degradedInstance is the API layer's own error representation for an
-// instance id whose config or ports could not be loaded — core no longer
-// fabricates one. It embeds *core.Instance anonymously so the JSON field set
-// is unchanged from a healthy instance (flattened by anonymous embedding),
-// plus an Error field. web/app/services/api.ts reads instance.error off this
-// same shape, so the wire contract stays byte-identical to before.
-type degradedInstance struct {
-	*core.Instance
-	Error string `json:"error,omitempty"`
-}
 
 // newDegradedInstance builds the API's degraded payload for an id that
 // failed to load. No config value is fabricated beyond ID/Name (both set to
 // id, since no real name is available) and the shared degraded state.
-func newDegradedInstance(id string, err error) degradedInstance {
-	return degradedInstance{
-		Instance: &core.Instance{
-			InstanceConfig: &core.InstanceConfig{ID: id, Name: id},
-			InstanceState:  core.InstanceState{State: core.InstanceStateError},
+func newDegradedInstance(id string, err error) InstanceResult {
+	return InstanceResult{
+		Instance: &Instance{
+			InstanceConfig: &InstanceConfig{ID: id, Name: id},
+			InstanceState:  InstanceState{State: InstanceStateError},
 		},
-		Error: err.Error(),
+		Error: err,
 	}
 }
 
 func listInstances(w http.ResponseWriter, r *http.Request) {
-	results := getCachedInstances()
-	payload := make([]any, 0, len(results))
-	for _, res := range results {
-		if res.Err != nil {
-			payload = append(payload, newDegradedInstance(res.ID, res.Err))
-			continue
-		}
-		payload = append(payload, res.Instance)
+	irs := getCachedInstances()
+	payload := make([]InstanceResult, 0)
+	for _, ir := range irs {
+		if ir.Error != nil {
+			payload = append(payload, newDegradedInstance(ir.ID, ir.Error))
+		} else {
+			payload = append(payload, ir)
+	 	}
 	}
 	writeJSON(w, http.StatusOK, payload)
 }
 
 func getInstance(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	inst, err := core.LoadInstance(id)
+	inst, err := LoadInstance(id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -57,15 +46,15 @@ func getInstance(w http.ResponseWriter, r *http.Request) {
 
 func createInstance(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		core.InstanceConfig
-		Ports core.Ports `json:"ports"`
+		InstanceConfig
+		Ports Ports `json:"ports"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
 
-	inst := &core.Instance{InstanceConfig: &req.InstanceConfig, Ports: req.Ports}
+	inst := &Instance{InstanceConfig: &req.InstanceConfig, Ports: req.Ports}
 	if err := inst.Validate(); err != nil {
 		writeError(w, err)
 		return
@@ -90,7 +79,7 @@ func createInstance(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp, err := core.LoadInstance(inst.ID)
+	resp, err := LoadInstance(inst.ID)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -101,13 +90,13 @@ func createInstance(w http.ResponseWriter, r *http.Request) {
 func patchInstance(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
-	inst, err := core.LoadInstance(id)
+	inst, err := LoadInstance(id)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 
-	var req core.PatchRequest
+	var req PatchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
@@ -118,7 +107,7 @@ func patchInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := core.LoadInstance(id)
+	resp, err := LoadInstance(id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -129,7 +118,7 @@ func patchInstance(w http.ResponseWriter, r *http.Request) {
 func deleteInstance(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	closeRCON(id)
-	if err := core.DeleteInstance(id); err != nil {
+	if err := DeleteInstance(id); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -137,33 +126,33 @@ func deleteInstance(w http.ResponseWriter, r *http.Request) {
 }
 
 func startInstance(w http.ResponseWriter, r *http.Request) {
-	instanceAction(w, r, func(inst *core.Instance) error {
+	instanceAction(w, r, func(inst *Instance) error {
 		return inst.Start()
 	})
 }
 
 func stopInstance(w http.ResponseWriter, r *http.Request) {
-	instanceAction(w, r, func(inst *core.Instance) error {
+	instanceAction(w, r, func(inst *Instance) error {
 		closeRCON(inst.ID)
 		return inst.Stop()
 	})
 }
 
 func enableInstance(w http.ResponseWriter, r *http.Request) {
-	instanceAction(w, r, func(inst *core.Instance) error {
+	instanceAction(w, r, func(inst *Instance) error {
 		return inst.Enable()
 	})
 }
 
 func disableInstance(w http.ResponseWriter, r *http.Request) {
-	instanceAction(w, r, func(inst *core.Instance) error {
+	instanceAction(w, r, func(inst *Instance) error {
 		return inst.Disable()
 	})
 }
 
-func instanceAction(w http.ResponseWriter, r *http.Request, fn func(*core.Instance) error) {
+func instanceAction(w http.ResponseWriter, r *http.Request, fn func(*Instance) error) {
 	id := r.PathValue("id")
-	inst, err := core.LoadInstance(id)
+	inst, err := LoadInstance(id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -194,7 +183,7 @@ func upgradeInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inst, err := core.LoadInstance(id)
+	inst, err := LoadInstance(id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -205,7 +194,7 @@ func upgradeInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := core.LoadInstance(id)
+	resp, err := LoadInstance(id)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -223,7 +212,7 @@ func rconInstance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inst, err := core.LoadInstance(id)
+	inst, err := LoadInstance(id)
 	if err != nil {
 		writeError(w, err)
 		return

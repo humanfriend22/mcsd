@@ -10,17 +10,17 @@ import (
 
 const rconIdleTTL = 30 * time.Second
 
-type rconEntry struct {
+type rcon struct {
 	mu     sync.Mutex
 	client *core.RCONClient
 	timer  *time.Timer
 }
 
-var rconConnections sync.Map // string → *rconEntry
+var rconConnections sync.Map // string → *rcon
 
 func sendRCON(instance *core.Instance, command string) (string, error) {
-	val, _ := rconConnections.LoadOrStore(instance.ID, &rconEntry{})
-	entry := val.(*rconEntry)
+	val, _ := rconConnections.LoadOrStore(instance.ID, &rcon{})
+	entry := val.(*rcon)
 
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
@@ -59,7 +59,7 @@ func sendRCON(instance *core.Instance, command string) (string, error) {
 
 func closeRCON(id string) {
 	if val, ok := rconConnections.LoadAndDelete(id); ok {
-		entry := val.(*rconEntry)
+		entry := val.(*rcon)
 		entry.mu.Lock()
 		defer entry.mu.Unlock()
 		if entry.timer != nil {
@@ -70,4 +70,22 @@ func closeRCON(id string) {
 			entry.client = nil
 		}
 	}
+}
+
+// closeStaleRCON closes any pooled RCON connection whose instance no longer
+// exists, e.g. deleted via the CLI, which the pool has no other way to learn
+// about. It reads only .ID off each result, so a degraded entry (nil
+// Instance) is handled the same as a healthy one.
+func closeStaleRCONs(irs []core.InstanceResult) {
+	ids := make(map[string]struct{}, len(irs))
+	for _, ir := range irs {
+		ids[ir.ID] = struct{}{}
+	}
+	rconConnections.Range(func(key, _ any) bool {
+		id := key.(string)
+		if _, ok := ids[id]; !ok {
+			closeRCON(id)
+		}
+		return true
+	})
 }

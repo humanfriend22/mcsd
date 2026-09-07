@@ -29,8 +29,7 @@ export interface Instance {
         rcon_password: string
     }
     state: InstanceState
-    // Populated only when state is 'error' — the backend's load-failure message.
-    error?: string
+    error: string
     enabled: boolean
     active_since: string | null
     memory_used: number
@@ -55,7 +54,7 @@ export interface InitData {
     vendors: { name: string; versions: string[] }[]
     public_ip: string
     local_ip: string
-    java_binaries: { path: string; version: string; vendor: string }[]
+    java_binaries: { path: string; description: string; }[]
 }
 
 export interface FileEntry {
@@ -106,11 +105,11 @@ async function sendDataRequest<T>(
 }
 
 // Instances Composable
-export const instances = ref<Instance[] | null>(null)
+export const instances = ref<Instance[]>([])
 let instancePollInterval: number | null = null
 
 async function loadInstances() {
-    instances.value = await sendDataRequest<Instance[]>('/api/instances')
+    instances.value = await sendDataRequest<Instance[]>('/api/instances') || []
 }
 
 export function useInstances() {

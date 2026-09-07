@@ -2,62 +2,68 @@ package api
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"mcsd/core"
 )
 
-// This is very crude basic cache system just in case multiple clients are polling.
+// Debounced pull-through cache: every request calls getCachedInstances.
+// Whichever request finds the cache stale is the one that refreshes it (via
+// CompareAndSwap on refreshing); everyone else just reads whatever is
+// currently cached, so concurrent pollers never pile up duplicate
+// systemd/D-Bus lookups on top of each other.
 
-const instanceCacheInterval = 2 * time.Second
+const instanceCacheInterval = 1 * time.Second
 
 var (
-	instancesMu     sync.RWMutex
+	cachedInstancesMutex     sync.RWMutex
 	cachedInstances []core.InstanceResult
+
+	lastRefresh     time.Time
+	refreshing atomic.Bool
 )
 
-// startInstanceCache refreshes the instance list on a timer so concurrent
-// clients share one read instead of each poll re-deriving state via systemd/D-Bus.
-func startInstanceCache() {
-	refreshInstances()
-	for range time.Tick(instanceCacheInterval) {
-		refreshInstances()
+func getCachedInstances() []core.InstanceResult {
+	cachedInstancesMutex.RLock()
+	cold := lastRefresh.IsZero()
+	stale := time.Since(lastRefresh) >= instanceCacheInterval
+	cachedInstancesMutex.RUnlock()
+
+	if cold {
+		// Nothing cached yet: block so the caller doesn't see a nil list.
+		// If another request already grabbed the refresh, briefly wait for
+		// it instead of racing back an empty slice.
+		if refreshing.CompareAndSwap(false, true) {
+			refreshInstances()
+			refreshing.Store(false)
+		} else {
+			for refreshing.Load() {
+				time.Sleep(time.Millisecond)
+			}
+		}
+	} else if stale && refreshing.CompareAndSwap(false, true) {
+		go func() {
+			defer refreshing.Store(false)
+			refreshInstances()
+		}()
 	}
+
+	cachedInstancesMutex.RLock()
+	defer cachedInstancesMutex.RUnlock()
+	return cachedInstances
 }
 
 func refreshInstances() {
-	results, err := core.ListInstances()
+	instances, err := core.ListInstances()
 	if err != nil {
 		return // keep last good cache on transient error
 	}
 
-	instancesMu.Lock()
-	cachedInstances = results
-	instancesMu.Unlock()
+	cachedInstancesMutex.Lock()
+	cachedInstances = instances
+	lastRefresh = time.Now()
+	cachedInstancesMutex.Unlock()
 
-	closeStaleRCON(results)
-}
-
-func getCachedInstances() []core.InstanceResult {
-	instancesMu.RLock()
-	defer instancesMu.RUnlock()
-	return cachedInstances
-}
-
-// closeStaleRCON closes any pooled RCON connection whose instance no longer
-// exists, e.g. deleted via the CLI, which the pool has no other way to learn
-// about. It reads only .ID off each result, so a degraded entry (nil
-// Instance) is handled the same as a healthy one.
-func closeStaleRCON(live []core.InstanceResult) {
-	liveIDs := make(map[string]struct{}, len(live))
-	for _, res := range live {
-		liveIDs[res.ID] = struct{}{}
-	}
-	rconConnections.Range(func(key, _ any) bool {
-		id := key.(string)
-		if _, ok := liveIDs[id]; !ok {
-			closeRCON(id)
-		}
-		return true
-	})
+	closeStaleRCONs(instances)
 }

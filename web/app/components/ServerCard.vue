@@ -11,18 +11,7 @@ import type { Instance } from '~/services/api'
 const { instance } = defineProps<{ instance: Instance }>()
 const emit = defineEmits<{ (e: 'open', id: string): void }>()
 
-const statusType = computed(() => {
-  switch (instance.state) {
-    case 'active': return 'success'
-    case 'activating':
-    case 'deactivating': return 'warning'
-    case 'failed': return 'error'
-    case 'error': return 'error'
-    default: return 'default'
-  }
-})
-
-const statusLabel = computed(() => instance.state)
+const { label: statusLabel, type: statusType } = useInstanceStatus(() => instance)
 
 // Tooltip copy for a degraded instance. Renders the backend's message
 // verbatim; falls back to a generic string when it's absent, empty, or

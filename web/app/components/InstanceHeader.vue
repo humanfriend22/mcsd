@@ -6,25 +6,7 @@ import { useCurrentInstance } from '~/services/api'
 
 const instance = useCurrentInstance();
 
-const statusType = computed(() => {
-  switch (instance.value.state) {
-    case 'active': return 'success'
-    case 'failed': return 'error'
-    case 'activating':
-    case 'deactivating': return 'warning'
-    default: return 'default'
-  }
-})
-
-const statusLabel = computed(() => {
-  switch (instance.value.state) {
-    case 'activating': return 'starting'
-    case 'deactivating': return 'stopping'
-    default: return instance.value.state
-  }
-})
-
-const isRunning = computed(() => instance.value.state === 'active')
+const { label: statusLabel, type: statusType, isRunning } = useInstanceStatus(instance)
 </script>
 
 <template>

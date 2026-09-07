@@ -5,7 +5,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"slices"
 	"syscall"
 
@@ -21,18 +20,18 @@ func Launch(id string) error {
 		os.Exit(1)
 	}
 
-	inst, err := LoadInstance(id)
+	instance, err := LoadInstance(id)
 	if err != nil {
 		return &InternalError{Message: fmt.Sprintf("load instance config: %s", err.Error())}
 	}
 
-	if err := inst.EnsureStartReady(); err != nil {
+	if err := instance.EnsureStartReady(); err != nil {
 		return err
 	}
 
-	args, err := resolveArgs(inst)
+	args, err := instance.resolveArgs()
 	if err != nil {
-		return &InternalError{Message: fmt.Sprintf("resolve command: %s", err.Error())}
+		return &InternalError{Message: fmt.Sprintf("resolve args: %s", err.Error())}
 	}
 
 	if err := os.Chdir(InstanceDir(id)); err != nil {
@@ -42,34 +41,31 @@ func Launch(id string) error {
 	return syscall.Exec(args[0], args, os.Environ())
 }
 
-func resolveArgs(inst *Instance) ([]string, error) {
-	if len(inst.JavaArgs) > 0 {
-		javaBin := inst.Binary
-		if javaBin == "" {
-			javaBin = "java"
-		}
-		bin, err := exec.LookPath(javaBin)
-		if err != nil {
-			return nil, &InternalError{Message: fmt.Sprintf("java not found: %s", err.Error())}
-		}
-		serverArgs := inst.ServerArgs
+func (instance *Instance) resolveArgs() ([]string, error) {
+	if instance.Binary == "" {
+		return nil, &InternalError{Message: fmt.Sprintf("binary not configured (%s)", instance.Binary)}
+	}
+	binary, err := exec.LookPath(instance.Binary)
+	if err != nil {
+		return nil, &InternalError{Message: fmt.Sprintf("binary not found (%s): %s", instance.Binary, err.Error())}
+	}
+
+	if len(instance.JavaArgs) > 0 {
+		serverArgs := instance.ServerArgs
 		if !slices.Contains(serverArgs, "nogui") {
 			serverArgs = append(serverArgs, "nogui")
 		}
-		args := []string{bin}
-		args = append(args, inst.JavaArgs...)
-		executable := vendors.Executable(inst.Vendor)
+
+		args := []string{binary}
+		args = append(args, instance.JavaArgs...)
+		executable := vendors.Executable(instance.Vendor)
 		args = append(args, "-jar", executable)
 		args = append(args, serverArgs...)
+
 		return args, nil
 	}
 
-	// Bedrock mode — use configured binary or default to "server" in instance dir.
-	bin := inst.Binary
-	if bin == "" {
-		bin = filepath.Join(InstanceDir(inst.ID), "server")
-	}
-	return append([]string{bin}, inst.ServerArgs...), nil
+	return append([]string{binary}, instance.ServerArgs...), nil
 }
 
 func checkPortAvailable(port int) error {

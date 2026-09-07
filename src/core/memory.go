@@ -34,13 +34,13 @@ func TotalSystemMemory() (int, error) {
 		return 0, err
 	}
 
-	return 0, &ServerError{Message: "MemTotal not found in /proc/meminfo"}
+	return 0, &InternalError{Message: "MemTotal not found in /proc/meminfo"}
 }
 
 func TotalReservedMemory(excludeID string) (int, error) {
 	units, err := SDManager.List("mcsd-instance@*.service")
 	if err != nil {
-		return 0, &ServerError{Message: fmt.Sprintf("list servers: %s", err.Error())}
+		return 0, &InternalError{Message: fmt.Sprintf("list servers: %s", err.Error())}
 	}
 	var total int
 	for _, unit := range units {
@@ -63,7 +63,7 @@ func TotalReservedMemory(excludeID string) (int, error) {
 func TotalEnabledMemory(excludeID string) (int, error) {
 	units, err := SDManager.List("mcsd-instance@*.service")
 	if err != nil {
-		return 0, &ServerError{Message: fmt.Sprintf("list servers: %s", err.Error())}
+		return 0, &InternalError{Message: fmt.Sprintf("list servers: %s", err.Error())}
 	}
 	var total int
 	for _, unit := range units {
@@ -86,7 +86,7 @@ func TotalEnabledMemory(excludeID string) (int, error) {
 func CheckMemoryBudget(excludeID string, requestedMemory int) error {
 	config, err := LoadConfig()
 	if err != nil {
-		return &ServerError{Message: fmt.Sprintf("load config: %s", err.Error())}
+		return &InternalError{Message: fmt.Sprintf("load config: %s", err.Error())}
 	}
 	if config.MemoryBudget <= 0 {
 		return nil
@@ -106,7 +106,7 @@ func CheckMemoryBudget(excludeID string, requestedMemory int) error {
 func CheckEnableBudget(id string, memory int) error {
 	config, err := LoadConfig()
 	if err != nil {
-		return &ServerError{Message: fmt.Sprintf("load config: %s", err.Error())}
+		return &InternalError{Message: fmt.Sprintf("load config: %s", err.Error())}
 	}
 	if config.MemoryBudget <= 0 {
 		return nil

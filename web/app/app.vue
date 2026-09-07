@@ -16,23 +16,28 @@ const route = useRoute()
 const instances = useInstances()
 useInit()
 
-const menuOptions = computed(() => [
-  {
-    label: 'Dashboard',
-    key: 'dashboard',
-    icon: renderIcon(HomeIcon),
-  },
-  {
-    label: 'Servers',
-    key: 'servers',
-    icon: siderCollapsed.value ? renderIcon(ChevronBackOutline) : renderIcon(ServersIcon),
-    children: [...(instances.value ?? [])].sort((a, b) => a.name.localeCompare(b.name)).map(inst => ({
-      label: inst.name,
-      key: `instance-${inst.id}`,
-      icon: () => h(StatusDot, { state: inst.state }),
-    })),
-  },
-])
+const menuOptions = computed(() => {
+  console.log(instances.value)
+  return [
+    {
+      label: 'Dashboard',
+      key: 'dashboard',
+      icon: renderIcon(HomeIcon),
+    },
+    {
+      label: 'Servers',
+      key: 'servers',
+      icon: siderCollapsed.value ? renderIcon(ChevronBackOutline) : renderIcon(ServersIcon),
+      children: [...instances.value]
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .map(inst => ({
+        label: inst.name,
+        key: `instance-${inst.id}`,
+        icon: () => h(StatusDot, { state: inst.state }),
+      })),
+    },
+  ]
+})
 
 const selectedKey = computed(() =>
   route.path.startsWith('/instances/') ? `instance-${route.params.id}` : 'dashboard'

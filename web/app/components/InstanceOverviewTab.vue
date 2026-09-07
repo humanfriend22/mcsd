@@ -18,11 +18,7 @@ const instance = useCurrentInstance()
 
 const message = useMessage()
 const actionLoading = ref<string | null>(null)
-const isRunning = computed(() => instance.value.state === 'active')
-const isTransitioning = computed(() => {
-  const s = instance.value.state
-  return s === 'activating' || s === 'deactivating'
-})
+const { isRunning, isTransitioning } = useInstanceStatus(instance)
 const initData = useInit()
 const publicIp = computed(() => initData.value?.public_ip ?? null)
 
@@ -95,7 +91,7 @@ async function copyAddress(address: string, key: 'local' | 'public') {
         <template v-if="isRunning && instance.memory_used != null">
           {{ formatMemoryMB(instance.memory_used) }} / {{ formatMemoryMB(instance.memory) }}
         </template>
-        <template v-else>{{ formatMemoryMB(instance.memory) }} alloc</template>
+        <template v-else>{{ formatMemoryMB(instance.memory) }} allocated</template>
       </InstanceStatCard>
 
       <InstanceStatCard label="Uptime" :icon="TimeOutline"

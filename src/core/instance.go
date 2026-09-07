@@ -1,10 +1,9 @@
 package core
 
 import (
+	"encoding/json"
 	"fmt"
-	"log"
 	"os"
-	"sync"
 
 	"mcsd/vendors"
 
@@ -16,6 +15,28 @@ type Instance struct {
 	*InstanceConfig       // config.json fields (flattened via embedding)
 	Ports           Ports `json:"ports"` // from server.properties
 	InstanceState         // live systemd state (flattened via embedding)
+}
+
+type InstanceResult struct {
+	*Instance
+	Error      error
+}
+
+func (ir InstanceResult) MarshalJSON() ([]byte, error) {
+	var err string
+	if ir.Error != nil {
+		err = ir.Error.Error()
+	}
+
+	type Alias InstanceResult
+
+	return json.Marshal(&struct {
+		Alias
+		Error string `json:"error,omitempty"`
+	}{
+		Alias: Alias(ir),
+		Error: err,
+	})
 }
 
 // LoadInstance builds a fully-populated Instance from config.json, server.properties, and systemd.
@@ -39,79 +60,17 @@ func LoadInstance(id string) (*Instance, error) {
 	return &instance, nil
 }
 
-// InstanceResult pairs an instance id with either its successfully loaded
-// Instance or the error that occurred while loading it. Exactly one of
-// Instance / Err is non-nil. ID is always populated so a consumer that only
-// needs identity (e.g. src/api/cache.go's closeStaleRCON) never has to
-// dereference Instance — core fabricates no stand-in domain object for a
-// load failure; each consumer builds its own error representation.
-type InstanceResult struct {
-	ID       string
-	Instance *Instance
-	Err      error
-}
-
-var (
-	loadFailureMu   sync.Mutex
-	lastLoadFailure = map[string]string{}
-)
-
-// logInstanceLoadFailure records a per-instance load failure, deduped so an
-// unchanged repeated failure is logged once rather than once per
-// ListInstances call (src/api/cache.go polls every 2 seconds).
-func logInstanceLoadFailure(id string, err error) {
-	msg := err.Error()
-
-	loadFailureMu.Lock()
-	defer loadFailureMu.Unlock()
-
-	if lastLoadFailure[id] == msg {
-		return
-	}
-	lastLoadFailure[id] = msg
-	log.Printf("instance %q failed to load: %s", id, msg)
-}
-
-// clearInstanceLoadFailure drops the dedupe entry for id so a recurrence
-// after a repair is logged again.
-func clearInstanceLoadFailure(id string) {
-	loadFailureMu.Lock()
-	defer loadFailureMu.Unlock()
-	delete(lastLoadFailure, id)
-}
-
-// buildInstanceList walks ids in order and appends exactly one InstanceResult
-// per id: a success entry carrying the loaded instance, or a failure entry
-// carrying the load error unwrapped — never a fabricated stand-in Instance.
-// Taking the loader as a parameter is the seam that makes this testable
-// without the compile-time DefaultBasePath.
-func buildInstanceList(ids []string, load func(string) (*Instance, error)) []InstanceResult {
-	results := make([]InstanceResult, 0, len(ids))
-	for _, id := range ids {
-		inst, err := load(id)
-		if err != nil {
-			logInstanceLoadFailure(id, err)
-			results = append(results, InstanceResult{ID: id, Err: err})
-			continue
-		}
-		clearInstanceLoadFailure(id)
-		results = append(results, InstanceResult{ID: id, Instance: inst})
-	}
-	return results
-}
-
-// ListInstances returns one InstanceResult per known instance id. A
-// per-instance load failure surfaces as that entry's Err rather than
-// shortening the list or failing the whole call (D-01); the returned error
-// is non-nil only when listing the ids themselves fails (e.g. the instances
-// directory is unreadable), which is a whole-list failure distinct from an
-// empty list.
 func ListInstances() ([]InstanceResult, error) {
 	ids, err := ListInstanceConfigs()
 	if err != nil {
 		return nil, err
 	}
-	return buildInstanceList(ids, LoadInstance), nil
+	instances := make([]InstanceResult, 0)
+	for _, id := range ids {
+		instance, err := LoadInstance(id)
+		instances = append(instances, InstanceResult{Instance: instance, Error: err})
+	}
+	return instances, nil
 }
 
 // Validate checks the instance config, ports, and memory budget for correctness.
@@ -138,6 +97,7 @@ func (instance *Instance) Create(ports Ports) error {
 	defer func() {
 		if provisionErr != nil {
 			_ = os.RemoveAll(InstanceDir(instance.ID))
+			_ = DeleteInstanceOverride(instance.ID)
 		}
 	}()
 
@@ -153,11 +113,13 @@ func (instance *Instance) Create(ports Ports) error {
 		return &InternalError{Message: fmt.Sprintf("write eula.txt: %s", provisionErr.Error())}
 	}
 
+	if provisionErr = WriteInstanceOverride(instance.ID, instance.Memory); provisionErr != nil {
+		return &InternalError{Message: fmt.Sprintf("write systemd override: %s", provisionErr.Error())}
+	}
+
 	return nil
 }
 
-// DeleteInstance disables, resets, and removes an instance by ID.
-// Used by orphan cleanup which may not have a full Instance.
 func DeleteInstance(id string) error {
 	if SDManager == nil {
 		return &InternalError{Message: "systemd not initialized"}
@@ -178,6 +140,11 @@ func DeleteInstance(id string) error {
 			return &InternalError{Message: fmt.Sprintf("remove instance dir: %s", err.Error())}
 		}
 	}
+
+	if err := DeleteInstanceOverride(id); err != nil {
+		return err
+	}
+
 	return SDManager.Reload()
 }
 
@@ -187,7 +154,7 @@ func (instance *Instance) Download(url string) error {
 	return vendors.DownloadFile(InstanceDir(instance.ID)+"/"+executable, url)
 }
 
-func (instance *Instance) Upgrade(v vendors.Vendor, version string, build int) error {
+func (instance *Instance) Upgrade(vendor vendors.Vendor, version string, build int) error {
 	status, err := SDManager.Status(instance.ID)
 	if err != nil {
 		return &InternalError{Message: fmt.Sprintf("check status: %s", err.Error())}
@@ -196,7 +163,7 @@ func (instance *Instance) Upgrade(v vendors.Vendor, version string, build int) e
 		return &ValidationError{Message: "server must be stopped before upgrading"}
 	}
 
-	downloadURL, err := v.DownloadURL(version, build)
+	downloadURL, err := vendor.DownloadURL(version, build)
 	if err != nil {
 		return &InternalError{Message: fmt.Sprintf("resolve download URL: %s", err.Error())}
 	}
@@ -204,7 +171,7 @@ func (instance *Instance) Upgrade(v vendors.Vendor, version string, build int) e
 		return &InternalError{Message: fmt.Sprintf("download: %s", err.Error())}
 	}
 
-	instance.Vendor = v.Name()
+	instance.Vendor = vendor.Name()
 	instance.Version = version
 	instance.Build = build
 	if err := WriteInstanceConfig(instance.ID, instance.InstanceConfig); err != nil {
@@ -215,6 +182,10 @@ func (instance *Instance) Upgrade(v vendors.Vendor, version string, build int) e
 
 // EnsureStartReady checks that the instance can start (port availability + memory budget).
 func (instance *Instance) EnsureStartReady() error {
+	if !InstanceOverrideExists(instance.ID) {
+		return &ValidationError{Message: "systemd override missing; recreate the instance or reconfigure memory to regenerate it"}
+	}
+
 	ports, err := instance.ReadPorts()
 	if err != nil {
 		return err
@@ -251,6 +222,9 @@ func (instance *Instance) Restart() error {
 
 // Enable enables the instance to start on boot, checking memory budget first.
 func (instance *Instance) Enable() error {
+	if !InstanceOverrideExists(instance.ID) {
+		return &ValidationError{Message: "systemd override missing; recreate the instance or reconfigure memory to regenerate it"}
+	}
 	if err := CheckEnableBudget(instance.ID, instance.Memory); err != nil {
 		return err
 	}
@@ -315,6 +289,12 @@ func (instance *Instance) Patch(req PatchRequest) error {
 	}
 	if err := WriteInstanceConfig(instance.ID, instance.InstanceConfig); err != nil {
 		return &InternalError{Message: fmt.Sprintf("write instance config: %s", err.Error())}
+	}
+
+	if req.Memory != nil {
+		if err := WriteInstanceOverride(instance.ID, instance.Memory); err != nil {
+			return &InternalError{Message: fmt.Sprintf("write systemd override: %s", err.Error())}
+		}
 	}
 
 	if req.GamePort != nil || req.RCONPort != nil || req.RCONPassword != nil {

@@ -1,11 +1,13 @@
 package core
 
 import (
+	"bytes"
 	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"text/template"
 
 	. "mcsd/utils"
 )
@@ -16,24 +18,75 @@ var DaemonServiceContent string
 //go:embed services/mcsd-instance@.service
 var DaemonServiceTemplateContent string
 
+//go:embed services/override.conf.tmpl
+var InstanceOverrideTemplateContent string
+
 const (
-	DefaultBasePath  = "/srv/mcsd/instances"
 	GlobalConfigPath = "/srv/mcsd/config.json"
 
 	DaemonServicePath         = "/etc/systemd/system/mcsd.service"
 	DaemonServiceTemplatePath = "/etc/systemd/system/mcsd-instance@.service"
+
+	DaemonDropInDirectory = "/etc/systemd/system/%s.d"
 )
 
-func InstanceDir(id string) string {
-	return filepath.Join(DefaultBasePath, id)
+// instanceOverrideDir returns the systemd drop-in directory for the given
+// instance's templated unit (mcsd-instance@<id>.service.d).
+func instanceOverrideDir(id string) string {
+	return fmt.Sprintf(DaemonDropInDirectory, UnitName(id))
 }
 
-// Init sets up mcsd on this host. memoryBudget is the RAM (MB) to reserve across
+// instanceOverridePath returns the drop-in file inside instanceOverrideDir.
+func instanceOverridePath(id string) string {
+	return filepath.Join(instanceOverrideDir(id), "override.conf")
+}
+
+// InstanceOverrideExists reports whether the per-instance drop-in (which
+// carries MemoryMax) has been written to disk.
+func InstanceOverrideExists(id string) bool {
+	_, err := os.Stat(instanceOverridePath(id))
+	return err == nil
+}
+
+// WriteInstanceOverride renders the override template with the instance's
+// memory limit and writes it as a systemd drop-in, then reloads systemd so
+// the unit picks it up.
+func WriteInstanceOverride(id string, memoryMB int) error {
+	tmpl, err := template.New("override").Parse(InstanceOverrideTemplateContent)
+	if err != nil {
+		return &InternalError{Message: fmt.Sprintf("parse override template: %s", err.Error())}
+	}
+
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, struct{ MemoryMB int }{memoryMB}); err != nil {
+		return &InternalError{Message: fmt.Sprintf("render override template: %s", err.Error())}
+	}
+
+	if err := os.MkdirAll(instanceOverrideDir(id), 0755); err != nil {
+		return &InternalError{Message: fmt.Sprintf("create override dir: %s", err.Error())}
+	}
+	if err := WriteFile(instanceOverridePath(id), buf.Bytes(), 0644); err != nil {
+		return &InternalError{Message: fmt.Sprintf("write override file: %s", err.Error())}
+	}
+
+	return SDManager.Reload()
+}
+
+// DeleteInstanceOverride removes the instance's drop-in directory and
+// reloads systemd. Removing a non-existent directory is a no-op error-wise.
+func DeleteInstanceOverride(id string) error {
+	if err := os.RemoveAll(instanceOverrideDir(id)); err != nil {
+		return &InternalError{Message: fmt.Sprintf("remove override dir: %s", err.Error())}
+	}
+	return SDManager.Reload()
+}
+
+// Sets up mcsd on this host. memoryBudget is the RAM (MB) to reserve across
 // all instances; 0 falls back to all system RAM minus 512 MB. Returns the resolved budget.
 func Init(memoryBudget int) (int, error) {
 	total, err := TotalSystemMemory()
 	if err != nil {
-		return 0, &ServerError{Message: fmt.Sprintf("read system memory: %s", err.Error())}
+		return 0, &InternalError{Message: fmt.Sprintf("read system memory: %s", err.Error())}
 	}
 
 	if memoryBudget == 0 {
@@ -48,20 +101,20 @@ func Init(memoryBudget int) (int, error) {
 	}
 
 	if err := os.MkdirAll(DefaultBasePath, 0755); err != nil {
-		return 0, &ServerError{Message: fmt.Sprintf("create instances dir: %s", err.Error())}
+		return 0, &InternalError{Message: fmt.Sprintf("create instances dir: %s", err.Error())}
 	}
 
 	config := &Config{MemoryBudget: memoryBudget}
 	if err := WriteConfig(config); err != nil {
-		return 0, &ServerError{Message: fmt.Sprintf("write config: %s", err.Error())}
+		return 0, &InternalError{Message: fmt.Sprintf("write config: %s", err.Error())}
 	}
 
 	if err := os.WriteFile(DaemonServicePath, []byte(DaemonServiceContent), 0644); err != nil {
-		return 0, &ServerError{Message: fmt.Sprintf("write daemon service: %s", err.Error())}
+		return 0, &InternalError{Message: fmt.Sprintf("write daemon service: %s", err.Error())}
 	}
 
 	if err := os.WriteFile(DaemonServiceTemplatePath, []byte(DaemonServiceTemplateContent), 0644); err != nil {
-		return 0, &ServerError{Message: fmt.Sprintf("write daemon service template: %s", err.Error())}
+		return 0, &InternalError{Message: fmt.Sprintf("write daemon service template: %s", err.Error())}
 	}
 
 	if err := SDManager.Enable(""); err != nil {
@@ -102,7 +155,7 @@ func DeInit() error {
 	_ = os.RemoveAll(filepath.Dir(GlobalConfigPath))
 
 	if err := SDManager.Reload(); err != nil {
-		return &ServerError{Message: fmt.Sprintf("reload systemd: %s", err.Error())}
+		return &InternalError{Message: fmt.Sprintf("reload systemd: %s", err.Error())}
 	}
 	return nil
 }
@@ -125,7 +178,7 @@ func EnsureReady() error {
 	}
 
 	if len(missing) > 0 {
-		return &ServerError{Message: fmt.Sprintf("mcsd not fully initialized:\n- %s", strings.Join(missing, "\n- "))}
+		return &InternalError{Message: fmt.Sprintf("mcsd not fully initialized:\n- %s", strings.Join(missing, "\n- "))}
 	}
 
 	cleanOrphans()

@@ -97,7 +97,7 @@ func writeFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := utils.WriteAtomic(target, data, 0640); err != nil {
+	if err := utils.WriteFile(target, data, 0640); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -156,7 +156,7 @@ func uploadFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := utils.WriteAtomic(destPath, data, 0640); err != nil {
+	if err := utils.WriteFile(destPath, data, 0640); err != nil {
 		writeError(w, err)
 		return
 	}

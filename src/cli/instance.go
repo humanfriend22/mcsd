@@ -107,9 +107,9 @@ func writeInstanceTable(w io.Writer, results []core.InstanceResult) error {
 	writer := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(writer, "ID\tSTATUS")
 	for _, res := range results {
-		if res.Err != nil {
+		if res.Error != nil {
 			fmt.Fprintf(writer, "%s\t%s\n", res.ID, core.InstanceStateError)
-			if msg := res.Err.Error(); msg != "" {
+			if msg := res.Error.Error(); msg != "" {
 				fmt.Fprintf(writer, "  %s\t\n", msg)
 			}
 			continue

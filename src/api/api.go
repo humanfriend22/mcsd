@@ -22,7 +22,6 @@ func Serve(port int) error {
 
 	go initPublicIP()
 	go initLocalIP()
-	go startInstanceCache()
 
 	mux := http.NewServeMux()
 
@@ -88,7 +87,7 @@ func writeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	var valErr *utils.ValidationError
 	var notFoundErr *utils.NotFoundError
-	var srvErr *utils.ServerError
+	var srvErr *utils.InternalError
 	switch {
 	case errors.As(err, &valErr):
 		status = http.StatusBadRequest

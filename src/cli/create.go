@@ -80,7 +80,7 @@ func runCreateWizard() (*core.Instance, core.Ports, string, error) {
 		javaBinaries = core.DiscoverJavaBinaries()
 		javaOptions = make([]huh.Option[int], 0, len(javaBinaries)+1)
 		for i, b := range javaBinaries {
-			label := fmt.Sprintf("%s %s — %s", b.Vendor, b.Version, b.Path)
+			label := fmt.Sprintf("%s — %s", b.Description, b.Path)
 			javaOptions = append(javaOptions, huh.NewOption(label, i))
 		}
 		javaOptions = append(javaOptions, huh.NewOption("Custom path…", -1))
@@ -137,7 +137,8 @@ func runCreateWizard() (*core.Instance, core.Ports, string, error) {
 							if s == "" {
 								return fmt.Errorf("path is required")
 							}
-							return core.ValidateJavaBinary(s)
+							_, err := core.ValidateJavaBinary(s)
+							return err
 						}),
 				),
 			)

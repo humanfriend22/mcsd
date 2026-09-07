@@ -1,5 +1,5 @@
 [Unit]
-Description=Minecraft Server (%i)
+Description=MCSD Instance (%i)
 After=network.target
 Documentation=https://github.com/humanfriend22/mcsd
 StartLimitBurst=3

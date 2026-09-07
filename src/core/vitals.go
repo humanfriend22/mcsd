@@ -51,7 +51,7 @@ func ReadHostVitals() (HostVitals, error) {
 func ReadBudgetVitals() (BudgetVitals, error) {
 	cfg, err := LoadConfig()
 	if err != nil {
-		return BudgetVitals{}, &ServerError{Message: "global config not loaded"}
+		return BudgetVitals{}, &InternalError{Message: "global config not loaded"}
 	}
 	used, err := TotalReservedMemory("")
 	if err != nil {
@@ -94,7 +94,7 @@ func readLoadAvg() (float64, error) {
 	}
 	fields := strings.Fields(string(data))
 	if len(fields) == 0 {
-		return 0, &ServerError{Message: "empty /proc/loadavg"}
+		return 0, &InternalError{Message: "empty /proc/loadavg"}
 	}
 	return strconv.ParseFloat(fields[0], 64)
 }
